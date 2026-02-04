@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,14 @@ def run_pipeline(
     workdir: Path,
     ffmpeg: str,
     audio_separator: str | None,
+    audio_separator_model: str | None = None,
+    enable_dereverb: bool = True,
+    dereverb_model: str = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt",
+    enable_silero_vad: bool = True,
+    silero_vad_threshold: float = 0.5,
+    silero_vad_min_speech_ms: int = 250,
+    silero_vad_min_silence_ms: int = 100,
+    silero_vad_speech_pad_ms: int = 30,
     whisper_cpp: str | None,
     whisper_model: Path | None,
     mfa: str,
@@ -78,15 +87,49 @@ def run_pipeline(
     if audio_separator:
         from karaoker.external.audio_separator import run_audio_separator
 
-        vocals_raw = paths.audio_dir / "vocals_raw.wav"
+        sep_dir = paths.audio_dir / "audio_separator"
+        dereverb_dir = paths.audio_dir / "dereverb"
+        vocals_raw = sep_dir / "vocals_raw.wav"
         run_audio_separator(
             audio_separator=audio_separator,
             input_audio=input_path,
-            output_vocals=vocals_raw,
+            output_audio=vocals_raw,
+            model_filename=audio_separator_model,
             # Cache models under the repo so repeated runs reuse downloads.
             model_file_dir=_project_root() / "models" / "audio_separator",
         )
-        ensure_wav_16k_mono(ffmpeg=ffmpeg, input_audio=vocals_raw, output_wav=vocals_wav)
+
+        vocals_dry_raw = vocals_raw
+        if enable_dereverb:
+            vocals_dry_raw = dereverb_dir / "vocals_dry_raw.wav"
+            run_audio_separator(
+                audio_separator=audio_separator,
+                input_audio=vocals_raw,
+                output_audio=vocals_dry_raw,
+                model_filename=dereverb_model,
+                single_stem="noreverb",
+                pick_stem="noreverb",
+                model_file_dir=_project_root() / "models" / "audio_separator",
+            )
+
+        vocals_dry_16k = paths.audio_dir / "vocals_dry.wav"
+        ensure_wav_16k_mono(ffmpeg=ffmpeg, input_audio=vocals_dry_raw, output_wav=vocals_dry_16k)
+
+        if enable_silero_vad:
+            from karaoker.external.silero_vad import zero_non_speech_with_silero_vad
+
+            zero_non_speech_with_silero_vad(
+                input_wav=vocals_dry_16k,
+                output_wav=vocals_wav,
+                model_dir=_project_root() / "models" / "silero_vad",
+                threshold=silero_vad_threshold,
+                min_speech_duration_ms=silero_vad_min_speech_ms,
+                min_silence_duration_ms=silero_vad_min_silence_ms,
+                speech_pad_ms=silero_vad_speech_pad_ms,
+            )
+        else:
+            shutil.copyfile(vocals_dry_16k, vocals_wav)
+
         asr_input = vocals_wav
     else:
         asr_input = song_wav

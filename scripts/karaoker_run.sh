@@ -22,30 +22,36 @@ Usage:
 
 Options:
   --lrc <path>                 Use an .lrc file as lyrics (recommended). Skips ASR.
-  --separate                   Enable vocal separation (python-audio-separator).
-  --no-separate                Disable separation (default).
-  --download-models            Download required MFA models and separation model before running.
+  --separate                   Enable vocal separation (python-audio-separator) (default).
+  --no-separate                Disable separation.
+  --download-models            Download required MFA/separation/VAD models before running.
 
   --kana-output <katakana|hiragana>   Default: katakana
   --mfa-acoustic-model <name|path>    Default: japanese_mfa
   --mfa-dict <name|path>              Default: (auto via G2P)
 
   --audio-separator-model <filename>  Default: model_bs_roformer_ep_317_sdr_12.9755.ckpt
+  --dereverb-model <filename>         Default: dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt
+  --no-dereverb                       Disable de-reverb (default enabled).
+  --no-silero-vad                     Disable Silero VAD gating (default enabled).
   --whisper-model <name>              Optional. Used only if you don't pass --lrc.
-                                      Default: large-v3. Auto-downloads if missing.
+                                      Default: large-v2. Auto-downloads if missing.
 USAGE
 }
 
 INPUT=""
 LRC=""
 WORKDIR=""
-SEPARATE=0
+SEPARATE=1
 DOWNLOAD_MODELS=0
 KANA_OUTPUT="katakana"
 MFA_ACOUSTIC_MODEL="japanese_mfa"
 MFA_DICT=""  # empty => auto-g2p dict
 AUDIO_SEP_MODEL="model_bs_roformer_ep_317_sdr_12.9755.ckpt"
-WHISPER_MODEL="large-v3" # model name (e.g. large-v3, medium, base, small, tiny)
+DEREVERB_MODEL="dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
+DEREVERB=1
+SILERO_VAD=1
+WHISPER_MODEL="large-v2" # model name (e.g. large-v2, medium, base, small, tiny)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +66,9 @@ while [[ $# -gt 0 ]]; do
     --mfa-acoustic-model) MFA_ACOUSTIC_MODEL="${2:-}"; shift 2 ;;
     --mfa-dict) MFA_DICT="${2:-}"; shift 2 ;;
     --audio-separator-model) AUDIO_SEP_MODEL="${2:-}"; shift 2 ;;
+    --dereverb-model) DEREVERB_MODEL="${2:-}"; shift 2 ;;
+    --no-dereverb) DEREVERB=0; shift ;;
+    --no-silero-vad) SILERO_VAD=0; shift ;;
     --whisper-model) WHISPER_MODEL="${2:-}"; shift 2 ;;
     *) die "unknown arg: $1 (use --help)" ;;
   esac
@@ -71,7 +80,7 @@ done
 [[ -x "${ENV_PREFIX}/bin/python" ]] || die "conda env not found at ${ENV_PREFIX} (run ./scripts/bootstrap_local.sh)"
 [[ -x "${ENV_PREFIX}/bin/karaoker" ]] || die "karaoker not installed in ${ENV_PREFIX}"
 
-# Normalize whisper model argument: allow "ggml-large-v3.bin" or "large-v3" etc.
+# Normalize whisper model argument: allow "ggml-large-v2.bin" or "large-v2" etc.
 WHISPER_MODEL="${WHISPER_MODEL#ggml-}"
 WHISPER_MODEL="${WHISPER_MODEL%.bin}"
 
@@ -107,7 +116,7 @@ ensure_mfa_models() {
 }
 
 whisper_model_path() {
-  # whisper.cpp uses filenames like "ggml-large-v3.bin"
+  # whisper.cpp uses filenames like "ggml-large-v2.bin"
   echo "${WHISPER_MODELS_DIR}/ggml-${WHISPER_MODEL}.bin"
 }
 
@@ -152,6 +161,47 @@ ensure_audio_separator_model() {
   mkdir -p "${model_dir}"
   # audio-separator will also fetch a small JSON index; allow network for first run.
   "${AUDIO_SEP}" --model_file_dir "${model_dir}" --download_model_only -m "${AUDIO_SEP_MODEL}"
+  if [[ "${DEREVERB}" -eq 1 ]]; then
+    "${AUDIO_SEP}" --model_file_dir "${model_dir}" --download_model_only -m "${DEREVERB_MODEL}"
+  fi
+}
+
+ensure_silero_vad_model() {
+  local model_dir="${ROOT}/models/silero_vad"
+  mkdir -p "${model_dir}"
+
+  # Trigger torch.hub to download the Silero VAD repo + weights into our repo-local cache.
+  SILERO_DIR="${model_dir}" KMP_DUPLICATE_LIB_OK=TRUE \
+    "${ENV_PREFIX}/bin/python" - <<'PY'
+import os
+from pathlib import Path
+
+import torch
+
+model_dir = Path(os.environ["SILERO_DIR"])
+model_dir.mkdir(parents=True, exist_ok=True)
+torch.hub.set_dir(str(model_dir))
+
+# Download/extract without importing hubconf.py (which can require torchaudio).
+try:
+    repo_dir = torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
+        "snakers4/silero-vad",
+        force_reload=False,
+        trust_repo=True,
+        calling_fn="karaoker",
+    )
+except TypeError:
+    repo_dir = torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
+        "snakers4/silero-vad",
+        force_reload=False,
+    )
+
+model_path = Path(repo_dir) / "src" / "silero_vad" / "data" / "silero_vad.jit"
+assert model_path.exists(), f"missing silero model: {model_path}"
+torch.jit.load(str(model_path), map_location=torch.device("cpu")).eval()
+
+print("Silero VAD cached at:", model_dir)
+PY
 }
 
 if [[ "${DOWNLOAD_MODELS}" -eq 1 ]]; then
@@ -159,6 +209,9 @@ if [[ "${DOWNLOAD_MODELS}" -eq 1 ]]; then
   if [[ "${SEPARATE}" -eq 1 ]]; then
     [[ -x "${AUDIO_SEP}" ]] || die "audio-separator not found in env at ${AUDIO_SEP}"
     ensure_audio_separator_model
+    if [[ "${SILERO_VAD}" -eq 1 ]]; then
+      ensure_silero_vad_model
+    fi
   fi
   # Whisper model is downloaded on-demand when ASR is used (no --lrc).
 fi
@@ -189,7 +242,15 @@ fi
 
 if [[ "${SEPARATE}" -eq 1 ]]; then
   [[ -x "${AUDIO_SEP}" ]] || die "audio-separator not found in env at ${AUDIO_SEP}"
-  cmd+=( --audio-separator "${AUDIO_SEP}" )
+  cmd+=( --audio-separator "${AUDIO_SEP}" --audio-separator-model "${AUDIO_SEP_MODEL}" )
+  if [[ "${DEREVERB}" -eq 0 ]]; then
+    cmd+=( --no-dereverb )
+  else
+    cmd+=( --dereverb-model "${DEREVERB_MODEL}" )
+  fi
+  if [[ "${SILERO_VAD}" -eq 0 ]]; then
+    cmd+=( --no-silero-vad )
+  fi
 fi
 
 echo "+ ${cmd[*]}"

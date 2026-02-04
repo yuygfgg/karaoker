@@ -13,7 +13,7 @@ from karaoker.textgrid_parser import textgrid_to_kana_events
 
 def _default_whisper_model_path() -> str:
     # Default whisper.cpp model shipped alongside this repo. Override via --whisper-model.
-    return str((Path(__file__).resolve().parents[2] / "third_party/whisper.cpp/models/ggml-large-v3.bin"))
+    return str((Path(__file__).resolve().parents[2] / "third_party/whisper.cpp/models/ggml-large-v2.bin"))
 
 
 def _default_whisper_cli_path() -> str:
@@ -41,6 +41,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Audio-separator python module/CLI (optional; see README).",
     )
     run.add_argument(
+        "--audio-separator-model",
+        default=None,
+        help=(
+            "audio-separator model filename for vocal separation "
+            "(default: audio-separator CLI default)."
+        ),
+    )
+    run.add_argument(
+        "--dereverb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable a de-reverb pass on the separated vocals (default: enabled).",
+    )
+    run.add_argument(
+        "--dereverb-model",
+        default="dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt",
+        help="audio-separator model filename for de-reverb (default: %(default)s).",
+    )
+    run.add_argument(
+        "--silero-vad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Silero VAD gating (non-speech samples set to 0) (default: enabled).",
+    )
+    run.add_argument(
+        "--silero-vad-threshold",
+        type=float,
+        default=0.5,
+        help="Silero VAD threshold (default: %(default)s).",
+    )
+    run.add_argument(
+        "--silero-vad-min-speech-ms",
+        type=int,
+        default=250,
+        help="Silero VAD min speech duration in ms (default: %(default)s).",
+    )
+    run.add_argument(
+        "--silero-vad-min-silence-ms",
+        type=int,
+        default=100,
+        help="Silero VAD min silence duration in ms (default: %(default)s).",
+    )
+    run.add_argument(
+        "--silero-vad-speech-pad-ms",
+        type=int,
+        default=30,
+        help="Silero VAD speech padding in ms (default: %(default)s).",
+    )
+    run.add_argument(
         "--whisper-cpp",
         default=_default_whisper_cli_path(),
         help="whisper.cpp executable (e.g. /path/to/whisper.cpp/main).",
@@ -48,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--whisper-model",
         default=_default_whisper_model_path(),
-        help="Path to a whisper.cpp ggml model file (default: ggml-large-v3.bin).",
+        help="Path to a whisper.cpp ggml model file (default: ggml-large-v2.bin).",
     )
     run.add_argument("--mfa", default="mfa", help="Montreal Forced Aligner executable.")
     run.add_argument(
@@ -130,6 +179,14 @@ def main(argv: list[str] | None = None) -> int:
             workdir=Path(args.workdir),
             ffmpeg=args.ffmpeg,
             audio_separator=args.audio_separator,
+            audio_separator_model=args.audio_separator_model,
+            enable_dereverb=args.dereverb,
+            dereverb_model=args.dereverb_model,
+            enable_silero_vad=args.silero_vad,
+            silero_vad_threshold=args.silero_vad_threshold,
+            silero_vad_min_speech_ms=args.silero_vad_min_speech_ms,
+            silero_vad_min_silence_ms=args.silero_vad_min_silence_ms,
+            silero_vad_speech_pad_ms=args.silero_vad_speech_pad_ms,
             whisper_cpp=args.whisper_cpp,
             whisper_model=Path(args.whisper_model),
             mfa=args.mfa,
@@ -152,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         run_audio_separator(
             audio_separator=args.audio_separator,
             input_audio=Path(args.input_wav),
-            output_vocals=Path(args.output_vocals),
+            output_audio=Path(args.output_vocals),
         )
         return 0
     if args.cmd == "asr":

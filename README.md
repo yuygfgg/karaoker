@@ -4,12 +4,13 @@ Local-first Japanese karaoke subtitle generator that produces per-kana (roughly 
 
 It integrates with:
 
-1. `python-audio-separator` to extract vocals from a song (de-instrumentalize).
-2. `whisper.cpp` for offline ASR.
-3. `pykakasi` to convert recognized text to pure kana and insert spaces between kana tokens.
-4. Montreal Forced Aligner (MFA) to force-align the spaced kana transcript to audio and produce a Praat
+1. `python-audio-separator` to extract vocals from a song (de-instrumentalize) + de-reverb.
+2. Silero VAD to hard-zero non-speech regions (silence becomes exactly 0) to reduce alignment noise.
+3. `whisper.cpp` for offline ASR.
+4. `pykakasi` to convert recognized text to pure kana and insert spaces between kana tokens.
+5. Montreal Forced Aligner (MFA) to force-align the spaced kana transcript to audio and produce a Praat
    `.TextGrid`.
-5. TextGrid parsing to generate the final JSON subtitle events.
+6. TextGrid parsing to generate the final JSON subtitle events.
 
 ## Status / Scope
 
@@ -19,7 +20,7 @@ It integrates with:
 ## Requirements (External Tools)
 
 - `ffmpeg` (audio decoding/conversion).
-- `whisper.cpp` (ASR). You need a model file (e.g. `ggml-large-v3.bin`).
+- `whisper.cpp` (ASR). You need a model file (e.g. `ggml-large-v2.bin`).
 - Montreal Forced Aligner (MFA) (alignment).
 - `python-audio-separator` (vocal separation).
 
@@ -50,13 +51,13 @@ For day-to-day usage, use:
 
 If you run without `--lrc` (i.e. you use ASR), the default whisper.cpp model is:
 
-- `./third_party/whisper.cpp/models/ggml-large-v3.bin` (large-v3)
+- `./third_party/whisper.cpp/models/ggml-large-v2.bin` (large-v2)
 
 Download it with whisper.cpp's helper script (or just run `./scripts/karaoker_run.sh` without `--lrc`
 and it will auto-download on demand):
 
 ```bash
-./third_party/whisper.cpp/models/download-ggml-model.sh large-v3
+./third_party/whisper.cpp/models/download-ggml-model.sh large-v2
 ```
 
 ## Quickstart (Pipeline)
@@ -75,7 +76,8 @@ karaoker run \
 ```
 
 Outputs:
-- `workdir/audio/vocals.wav`
+- `workdir/audio/vocals.wav` (separated vocals + de-reverb + Silero VAD gating, when `--audio-separator` is enabled)
+- `workdir/audio/vocals_dry.wav` (pre-VAD, de-reverbed 16k mono)
 - `workdir/asr/asr.json`
 - `workdir/transcript/kana_spaced.txt`
 - `workdir/alignment/aligned.TextGrid`
