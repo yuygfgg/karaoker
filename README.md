@@ -100,12 +100,28 @@ karaoker export --textgrid aligned.TextGrid --output-json subtitles.json
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "language": "ja",
+  "kana_output": "katakana",
   "units": "kana",
+  "source": { "type": "lrc", "path": "lyrics.lrc", "num_lines": 123 },
   "events": [
-    { "i": 0, "start": 1.23, "end": 1.45, "text": "サ" },
-    { "i": 1, "start": 1.45, "end": 1.60, "text": "ン" }
+    {
+      "i": 0,
+      "start": 1.23,
+      "end": 1.45,
+      "text": "サ",
+      "script_unit_i": 3,
+      "script_char_start": 5,
+      "script_char_end": 7,
+      "script_text": "漢字"
+    }
+  ],
+  "script_units": [
+    { "i": 3, "start": 1.23, "end": 1.60, "text": "漢字", "char_start": 5, "char_end": 7 }
+  ],
+  "lines": [
+    { "i": 0, "start": 0.0, "end": 3.2, "text": "…", "ref_kana": "…" }
   ]
 }
 ```

@@ -7,7 +7,6 @@ from karaoker.external.ffmpeg import ensure_wav_16k_mono
 from karaoker.external.mfa import run_mfa_align
 from karaoker.external.whispercpp import run_whisper_cpp
 from karaoker.kana import to_spaced_kana
-from karaoker.lyrics import lrc_to_text
 from karaoker.pipeline import run_pipeline
 from karaoker.textgrid_parser import textgrid_to_kana_events
 

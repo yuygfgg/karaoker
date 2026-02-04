@@ -7,8 +7,8 @@ from pathlib import Path
 from karaoker.external.ffmpeg import ensure_wav_16k_mono
 from karaoker.external.mfa import run_mfa_align, run_mfa_align_corpus, run_mfa_g2p
 from karaoker.external.whispercpp import run_whisper_cpp
-from karaoker.kana import to_spaced_kana
 from karaoker.lyrics import parse_lrc
+from karaoker.mapping import map_kana_events_to_script, to_spaced_kana_with_units
 from karaoker.textgrid_parser import textgrid_to_kana_events
 
 
@@ -96,6 +96,7 @@ def run_pipeline(
     if lyrics_lrc is not None:
         lrc_lines = parse_lrc(lyrics_lrc)
 
+    script_text: str | None = None
     if lrc_lines:
         (paths.asr_dir / "asr.json").write_text(
             json.dumps(
@@ -133,23 +134,30 @@ def run_pipeline(
         ).strip()
         if not transcript_text:
             raise ValueError(f"whisper.cpp JSON 'transcription' contained no text. See: {asr_json}")
+        script_text = transcript_text
 
     # 3) Kana conversion (pykakasi) + prepare MFA corpus
     corpus_dir = paths.alignment_dir / "corpus"
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
     all_kana_tokens: list[str] = []
+    lrc_kana_spaced: list[str] | None = None
+    lrc_script_units = None
+    asr_script_units = None
     if lrc_lines:
         # Split audio + transcripts by LRC line times to make alignment feasible.
-        kana_lines: list[str] = []
+        kana_lines = []
+        lrc_kana_spaced = kana_lines
+        lrc_script_units = []
         for idx, line in enumerate(lrc_lines):
             utt_id = f"utt_{idx:04d}"
             out_wav = corpus_dir / f"{utt_id}.wav"
             out_lab = corpus_dir / f"{utt_id}.lab"
 
-            kana_spaced = to_spaced_kana(line.text, output=kana_output)
+            kana_spaced, units = to_spaced_kana_with_units(line.text, output=kana_output)
             out_lab.write_text(kana_spaced + "\n", encoding="utf-8")
             kana_lines.append(kana_spaced)
+            lrc_script_units.append(units)
             all_kana_tokens.extend(kana_spaced.split())
 
             from karaoker.external.ffmpeg import cut_wav_segment
@@ -163,11 +171,16 @@ def run_pipeline(
             )
         # Also write a convenience joined transcript.
         (paths.transcript_dir / "kana_spaced.txt").write_text("\n".join(kana_lines) + "\n", encoding="utf-8")
+        (paths.transcript_dir / "script.txt").write_text(
+            "\n".join(x.text for x in lrc_lines) + "\n",
+            encoding="utf-8",
+        )
     else:
         # Single-utterance transcript (ASR path).
-        kana_spaced = to_spaced_kana(transcript_text, output=kana_output)
+        kana_spaced, asr_script_units = to_spaced_kana_with_units(script_text or "", output=kana_output)
         kana_spaced_path = paths.transcript_dir / "kana_spaced.txt"
         kana_spaced_path.write_text(kana_spaced + "\n", encoding="utf-8")
+        (paths.transcript_dir / "script.txt").write_text((script_text or "") + "\n", encoding="utf-8")
         all_kana_tokens = kana_spaced.split()
 
     # 4) MFA forced alignment (TextGrid)
@@ -183,6 +196,7 @@ def run_pipeline(
         run_mfa_g2p(mfa=mfa, word_list=words_path, g2p_model=g2p_model, output_dictionary=gen_dict)
         mfa_dict_to_use = str(gen_dict)
 
+    script_units_events: list[dict[str, object]] | None = None
     if lrc_lines:
         out_dir = paths.alignment_dir / "textgrids"
         run_mfa_align_corpus(
@@ -194,11 +208,31 @@ def run_pipeline(
         )
         # Merge TextGrids into a single event list by applying per-line offsets.
         events: list[dict[str, object]] = []
+        script_units_events = []
         for idx, line in enumerate(lrc_lines):
             tg = out_dir / f"utt_{idx:04d}.TextGrid"
             if not tg.exists():
                 continue
-            events.extend(textgrid_to_kana_events(tg, offset_seconds=line.start))
+
+            line_events = textgrid_to_kana_events(tg, offset_seconds=line.start)
+            # Preserve per-line indices before global reindexing.
+            for e in line_events:
+                e["line_i"] = idx
+                e["line_event_i"] = e.get("i")
+
+            units = lrc_script_units[idx] if lrc_script_units is not None else []
+            mapped_line_events, timed_units = map_kana_events_to_script(
+                script_text=line.text,
+                script_units=units,
+                kana_events=line_events,
+            )
+            for e in mapped_line_events:
+                e["line_i"] = idx
+            for u in timed_units:
+                u["line_i"] = idx
+
+            events.extend(mapped_line_events)
+            script_units_events.extend(timed_units)
         # Re-index events
         events.sort(key=lambda e: float(e["start"]))  # type: ignore[index]
         for i, e in enumerate(events):
@@ -213,15 +247,46 @@ def run_pipeline(
             acoustic_model=mfa_acoustic_model,
             output_textgrid=textgrid_path,
         )
-        events = textgrid_to_kana_events(textgrid_path)
+        events0 = textgrid_to_kana_events(textgrid_path)
+        mapped_events, script_units_events0 = map_kana_events_to_script(
+            script_text=script_text or "",
+            script_units=asr_script_units or [],
+            kana_events=events0,
+        )
+        events = mapped_events
+        script_units_events = script_units_events0
 
     # 5) Parse TextGrid -> JSON
-    out = {
-        "version": 1,
+    source_meta: dict[str, object]
+    if lrc_lines:
+        source_meta = {"type": "lrc", "path": str(lyrics_lrc), "num_lines": len(lrc_lines)}
+    else:
+        source_meta = {"type": "asr", "path": str(paths.asr_dir / "asr.json")}
+
+    out: dict[str, object] = {
+        "version": 2,
         "language": "ja",
+        "kana_output": kana_output,
         "units": "kana",
+        "source": source_meta,
         "events": events,
     }
+    if lrc_lines:
+        out["lines"] = [
+            {
+                "i": i,
+                "start": round(float(x.start), 4),
+                "end": round(float(x.end), 4),
+                "text": x.text,
+                "ref_kana": (lrc_kana_spaced[i] if lrc_kana_spaced is not None else ""),
+            }
+            for i, x in enumerate(lrc_lines)
+        ]
+    else:
+        out["script"] = {"text": script_text or "", "ref_kana": kana_spaced}
+
+    if script_units_events is not None:
+        out["script_units"] = script_units_events
     (paths.output_dir / "subtitles.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
