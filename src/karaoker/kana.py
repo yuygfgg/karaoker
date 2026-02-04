@@ -6,7 +6,9 @@ from pykakasi import kakasi
 
 
 _RE_JP_SPACE = re.compile(r"\s+")
-_RE_NON_KANA = re.compile(r"[^\u3040-\u30ff\u30fc ]+")  # keep kana + prolonged mark + space
+_RE_NON_KANA = re.compile(
+    r"[^\u3040-\u30ff\u30fc ]+"
+)  # keep kana + prolonged mark + space
 
 
 def _kakasi_converter(output: str):
@@ -14,8 +16,8 @@ def _kakasi_converter(output: str):
     Build a kakasi converter.
 
     output:
-      - 'katakana' -> pure katakana
-      - 'hiragana' -> pure hiragana
+        - 'katakana' -> pure katakana
+        - 'hiragana' -> pure hiragana
     """
     kks = kakasi()
     # Kanji -> kana

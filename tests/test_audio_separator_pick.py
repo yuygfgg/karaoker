@@ -14,4 +14,3 @@ def test_pick_output_prefers_stem(tmp_path: Path) -> None:
 
     _pick_output(out, stem="vocals")
     assert out.read_bytes() == b"voc"
-

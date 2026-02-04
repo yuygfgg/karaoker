@@ -1,4 +1,8 @@
-from karaoker.mapping import needleman_wunsch, map_kana_events_to_script, to_spaced_kana_with_units
+from karaoker.mapping import (
+    needleman_wunsch,
+    map_kana_events_to_script,
+    to_spaced_kana_with_units,
+)
 
 
 def test_needleman_wunsch_deletion():
@@ -17,7 +21,15 @@ def test_map_kana_events_to_script_units_basic():
     events = []
     t = 0.0
     for i, tok in enumerate(ref_tokens):
-        events.append({"i": i, "start": round(t, 4), "end": round(t + 0.1, 4), "text": tok, "tier": "kana"})
+        events.append(
+            {
+                "i": i,
+                "start": round(t, 4),
+                "end": round(t + 0.1, 4),
+                "text": tok,
+                "tier": "kana",
+            }
+        )
         t += 0.1
 
     enriched, timed_units = map_kana_events_to_script(
@@ -35,4 +47,3 @@ def test_map_kana_events_to_script_units_basic():
     # Timed units should cover at least the kana-carrying units.
     assert timed_units
     assert all(u["end"] >= u["start"] for u in timed_units)
-

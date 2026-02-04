@@ -126,7 +126,9 @@ def _pick_tier(tiers: dict[str, list[Interval]]) -> tuple[str, list[Interval]]:
     best_name: str | None = None
     best_score = -1
     for k, intervals in tiers.items():
-        score = sum(1 for itv in intervals if itv.text.strip() and itv.text.strip() != "<eps>")
+        score = sum(
+            1 for itv in intervals if itv.text.strip() and itv.text.strip() != "<eps>"
+        )
         if score > best_score:
             best_name = k
             best_score = score
@@ -135,7 +137,9 @@ def _pick_tier(tiers: dict[str, list[Interval]]) -> tuple[str, list[Interval]]:
     raise ValueError("No tiers found in TextGrid.")
 
 
-def textgrid_to_kana_events(textgrid_path: Path, *, offset_seconds: float = 0.0) -> list[dict[str, Any]]:
+def textgrid_to_kana_events(
+    textgrid_path: Path, *, offset_seconds: float = 0.0
+) -> list[dict[str, Any]]:
     """
     Convert a TextGrid tier into timed kana events.
     """

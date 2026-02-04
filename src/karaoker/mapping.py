@@ -10,7 +10,9 @@ from karaoker.kana import kana_tokens
 
 
 _RE_JP_SPACE = re.compile(r"\s+")
-_RE_NON_KANA = re.compile(r"[^\u3040-\u30ff\u30fc ]+")  # keep kana + prolonged mark + space
+_RE_NON_KANA = re.compile(
+    r"[^\u3040-\u30ff\u30fc ]+"
+)  # keep kana + prolonged mark + space
 
 
 def _kakasi_instance(*, output: str):
@@ -70,7 +72,9 @@ class ScriptUnit:
     ref_kana_end: int
 
 
-def script_to_kana_units(text: str, *, output: str = "katakana") -> tuple[list[str], list[ScriptUnit]]:
+def script_to_kana_units(
+    text: str, *, output: str = "katakana"
+) -> tuple[list[str], list[ScriptUnit]]:
     """
     Convert script text to reference kana tokens, while keeping a mapping back to script spans.
 
@@ -124,7 +128,9 @@ def script_to_kana_units(text: str, *, output: str = "katakana") -> tuple[list[s
     return ref_tokens, units
 
 
-def to_spaced_kana_with_units(text: str, *, output: str = "katakana") -> tuple[str, list[ScriptUnit]]:
+def to_spaced_kana_with_units(
+    text: str, *, output: str = "katakana"
+) -> tuple[str, list[ScriptUnit]]:
     ref_tokens, units = script_to_kana_units(text, output=output)
     return " ".join(ref_tokens), units
 

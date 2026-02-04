@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import json
 import os
 import sys
 import warnings
@@ -65,13 +66,18 @@ def _silero_get_speech_timestamps(
         for _ in range(len(audio.shape)):  # trying to squeeze empty dimensions
             audio = audio.squeeze(0)
         if len(audio.shape) > 1:
-            raise ValueError("More than one dimension in audio. Are you trying to process 2ch audio?")
+            raise ValueError(
+                "More than one dimension in audio. Are you trying to process 2ch audio?"
+            )
 
     if sampling_rate > 16000 and (sampling_rate % 16000 == 0):
         step = sampling_rate // 16000
         sampling_rate = 16000
         audio = audio[::step]
-        warnings.warn("Sampling rate is a multiple of 16000, casting to 16000 manually!", stacklevel=2)
+        warnings.warn(
+            "Sampling rate is a multiple of 16000, casting to 16000 manually!",
+            stacklevel=2,
+        )
     else:
         step = 1
 
@@ -87,7 +93,9 @@ def _silero_get_speech_timestamps(
     min_speech_samples = sampling_rate * min_speech_duration_ms / 1000
     speech_pad_samples = sampling_rate * speech_pad_ms / 1000
     max_speech_samples = (
-        sampling_rate * max_speech_duration_s - window_size_samples - 2 * speech_pad_samples
+        sampling_rate * max_speech_duration_s
+        - window_size_samples
+        - 2 * speech_pad_samples
     )
     min_silence_samples = sampling_rate * min_silence_duration_ms / 1000
     min_silence_samples_at_max_speech = sampling_rate * min_silence_at_max_speech / 1000
@@ -98,7 +106,9 @@ def _silero_get_speech_timestamps(
     for current_start_sample in range(0, audio_length_samples, window_size_samples):
         chunk = audio[current_start_sample : current_start_sample + window_size_samples]
         if len(chunk) < window_size_samples:
-            chunk = torch.nn.functional.pad(chunk, (0, int(window_size_samples - len(chunk))))
+            chunk = torch.nn.functional.pad(
+                chunk, (0, int(window_size_samples - len(chunk)))
+            )
         speech_prob = model(chunk, sampling_rate).item()
         speech_probs.append(speech_prob)
 
@@ -173,7 +183,9 @@ def _silero_get_speech_timestamps(
                 temp_end = cur_sample
             sil_dur_now = cur_sample - temp_end
 
-            if (not use_max_poss_sil_at_max_speech) and (sil_dur_now > min_silence_samples_at_max_speech):
+            if (not use_max_poss_sil_at_max_speech) and (
+                sil_dur_now > min_silence_samples_at_max_speech
+            ):
                 prev_end = temp_end
 
             if sil_dur_now < min_silence_samples:
@@ -187,7 +199,10 @@ def _silero_get_speech_timestamps(
             possible_ends = []
             continue
 
-    if current_speech and (audio_length_samples - current_speech["start"]) > min_speech_samples:
+    if (
+        current_speech
+        and (audio_length_samples - current_speech["start"]) > min_speech_samples
+    ):
         current_speech["end"] = audio_length_samples
         speeches.append(current_speech)
 
@@ -202,10 +217,16 @@ def _silero_get_speech_timestamps(
                     max(0, speeches[i + 1]["start"] - silence_duration // 2)
                 )
             else:
-                speech["end"] = int(min(audio_length_samples, speech["end"] + speech_pad_samples))
-                speeches[i + 1]["start"] = int(max(0, speeches[i + 1]["start"] - speech_pad_samples))
+                speech["end"] = int(
+                    min(audio_length_samples, speech["end"] + speech_pad_samples)
+                )
+                speeches[i + 1]["start"] = int(
+                    max(0, speeches[i + 1]["start"] - speech_pad_samples)
+                )
         else:
-            speech["end"] = int(min(audio_length_samples, speech["end"] + speech_pad_samples))
+            speech["end"] = int(
+                min(audio_length_samples, speech["end"] + speech_pad_samples)
+            )
 
     if return_seconds:
         audio_length_seconds = audio_length_samples / sampling_rate
@@ -213,9 +234,12 @@ def _silero_get_speech_timestamps(
         for speech_dict in speeches:
             out.append(
                 {
-                    "start": max(round(speech_dict["start"] / sampling_rate, time_resolution), 0),
+                    "start": max(
+                        round(speech_dict["start"] / sampling_rate, time_resolution), 0
+                    ),
                     "end": min(
-                        round(speech_dict["end"] / sampling_rate, time_resolution), audio_length_seconds
+                        round(speech_dict["end"] / sampling_rate, time_resolution),
+                        audio_length_seconds,
                     ),
                 }
             )
@@ -242,16 +266,20 @@ def _load_silero_vad_model(*, model_dir: Path):
     # Download/extract the repo to get the bundled TorchScript model file.
     # This avoids importing hubconf.py (which depends on torchaudio).
     try:
-        repo_dir = torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
-            "snakers4/silero-vad",
-            force_reload=False,
-            trust_repo=True,
-            calling_fn="karaoker",
+        repo_dir = (
+            torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
+                "snakers4/silero-vad",
+                force_reload=False,
+                trust_repo=True,
+                calling_fn="karaoker",
+            )
         )
     except TypeError:  # pragma: no cover - depends on torch version
-        repo_dir = torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
-            "snakers4/silero-vad",
-            force_reload=False,
+        repo_dir = (
+            torch.hub._get_cache_or_reload(  # pyright: ignore[reportPrivateUsage]
+                "snakers4/silero-vad",
+                force_reload=False,
+            )
         )
 
     model_path = Path(repo_dir) / "src" / "silero_vad" / "data" / "silero_vad.jit"
@@ -272,17 +300,22 @@ def zero_non_speech_with_silero_vad(
     min_speech_duration_ms: int = 250,
     min_silence_duration_ms: int = 100,
     speech_pad_ms: int = 30,
-) -> None:
+    output_segments_json: Path | None = None,
+) -> list[tuple[int, int]]:
     """
     Use Silero VAD to zero out non-speech regions (set samples to exactly 0).
 
     `input_wav` must be 16 kHz mono 16-bit PCM (this is what `ensure_wav_16k_mono` produces).
+
+    Returns the detected speech segments in milliseconds: [(start_ms, end_ms), ...].
     """
     output_wav.parent.mkdir(parents=True, exist_ok=True)
 
     sample_rate, pcm_s16 = _read_wav_s16le_mono(input_wav)
     if sample_rate != 16000:
-        raise ValueError(f"Expected 16kHz wav for Silero VAD, got {sample_rate}Hz: {input_wav}")
+        raise ValueError(
+            f"Expected 16kHz wav for Silero VAD, got {sample_rate}Hz: {input_wav}"
+        )
 
     try:
         # macOS: torch/OpenMP can abort with a duplicate runtime. This suppresses that check.
@@ -307,19 +340,44 @@ def zero_non_speech_with_silero_vad(
         min_silence_duration_ms=min_silence_duration_ms,
         speech_pad_ms=speech_pad_ms,
     )
-    segments = [(int(x["start"]), int(x["end"])) for x in speech if "start" in x and "end" in x]
+    segments = [
+        (int(x["start"]), int(x["end"])) for x in speech if "start" in x and "end" in x
+    ]
     out_pcm = zero_outside_segments_s16(pcm_s16, segments=segments)
     _write_wav_s16le_mono(output_wav, sample_rate=sample_rate, pcm_s16=out_pcm)
+
+    segments_ms = [
+        (int(round((s / sample_rate) * 1000.0)), int(round((e / sample_rate) * 1000.0)))
+        for s, e in segments
+    ]
+    if output_segments_json is not None:
+        output_segments_json.parent.mkdir(parents=True, exist_ok=True)
+        output_segments_json.write_text(
+            json.dumps(
+                {"sample_rate_hz": sample_rate, "speech_segments_ms": segments_ms},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return segments_ms
 
 
 def _read_wav_s16le_mono(path: Path) -> tuple[int, array.array]:
     with wave.open(str(path), "rb") as wf:
         if wf.getnchannels() != 1:
-            raise ValueError(f"Expected mono wav, got {wf.getnchannels()} channels: {path}")
+            raise ValueError(
+                f"Expected mono wav, got {wf.getnchannels()} channels: {path}"
+            )
         if wf.getsampwidth() != 2:
-            raise ValueError(f"Expected 16-bit PCM wav, got sampwidth={wf.getsampwidth()}: {path}")
+            raise ValueError(
+                f"Expected 16-bit PCM wav, got sampwidth={wf.getsampwidth()}: {path}"
+            )
         if wf.getcomptype() != "NONE":
-            raise ValueError(f"Expected uncompressed PCM wav, got comptype={wf.getcomptype()}: {path}")
+            raise ValueError(
+                f"Expected uncompressed PCM wav, got comptype={wf.getcomptype()}: {path}"
+            )
         sample_rate = int(wf.getframerate())
         frames = wf.readframes(wf.getnframes())
 
@@ -330,7 +388,9 @@ def _read_wav_s16le_mono(path: Path) -> tuple[int, array.array]:
     return sample_rate, pcm
 
 
-def _write_wav_s16le_mono(path: Path, *, sample_rate: int, pcm_s16: array.array) -> None:
+def _write_wav_s16le_mono(
+    path: Path, *, sample_rate: int, pcm_s16: array.array
+) -> None:
     pcm = pcm_s16
     if sys.byteorder == "big":
         pcm = array.array("h", pcm_s16)

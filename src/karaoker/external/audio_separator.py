@@ -23,7 +23,7 @@ def run_audio_separator(
     Notes:
     - `single_stem` controls the `--single_stem` flag passed to audio-separator (when not None).
     - `pick_stem` controls which output file we copy from the output directory. If not set, we
-      default it to `single_stem`.
+        default it to `single_stem`.
     """
     output_audio.parent.mkdir(parents=True, exist_ok=True)
     exe = shutil.which(audio_separator) or audio_separator
@@ -50,7 +50,13 @@ def run_audio_separator(
         cmd += ["--single_stem", single_stem]
     cmd += [str(input_audio)]
 
-    run_checked(cmd, env={**env, "PATH": str(Path(exe).resolve().parent) + ":" + os.environ.get("PATH", "")})
+    run_checked(
+        cmd,
+        env={
+            **env,
+            "PATH": str(Path(exe).resolve().parent) + ":" + os.environ.get("PATH", ""),
+        },
+    )
     _pick_output(output_audio, stem=(pick_stem or single_stem))
 
 

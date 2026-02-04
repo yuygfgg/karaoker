@@ -15,4 +15,3 @@ def test_zero_outside_segments_s16_clamps() -> None:
     pcm = array.array("h", [1, 2, 3, 4])
     out = zero_outside_segments_s16(pcm, segments=[(-10, 2), (3, 100), (2, 2)])
     assert out.tolist() == [1, 2, 0, 4]
-

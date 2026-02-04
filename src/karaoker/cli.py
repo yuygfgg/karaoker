@@ -13,11 +13,21 @@ from karaoker.textgrid_parser import textgrid_to_kana_events
 
 def _default_whisper_model_path() -> str:
     # Default whisper.cpp model shipped alongside this repo. Override via --whisper-model.
-    return str((Path(__file__).resolve().parents[2] / "third_party/whisper.cpp/models/ggml-large-v2.bin"))
+    return str(
+        (
+            Path(__file__).resolve().parents[2]
+            / "third_party/whisper.cpp/models/ggml-large-v2.bin"
+        )
+    )
 
 
 def _default_whisper_cli_path() -> str:
-    return str((Path(__file__).resolve().parents[2] / "third_party/whisper.cpp/build/bin/whisper-cli"))
+    return str(
+        (
+            Path(__file__).resolve().parents[2]
+            / "third_party/whisper.cpp/build/bin/whisper-cli"
+        )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,8 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     run = sub.add_parser("run", help="Run the full local-first pipeline.")
-    run.add_argument("--input", required=True, help="Input song path (e.g. .flac/.mp3/.wav).")
-    run.add_argument("--workdir", required=True, help="Working directory for intermediate outputs.")
+    run.add_argument(
+        "--input", required=True, help="Input song path (e.g. .flac/.mp3/.wav)."
+    )
+    run.add_argument(
+        "--workdir", required=True, help="Working directory for intermediate outputs."
+    )
     run.add_argument(
         "--lyrics-lrc",
         default=None,
@@ -34,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # External tool entrypoints
-    run.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg executable (default: ffmpeg).")
+    run.add_argument(
+        "--ffmpeg", default="ffmpeg", help="ffmpeg executable (default: ffmpeg)."
+    )
     run.add_argument(
         "--audio-separator",
         default=None,
@@ -125,12 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Step commands (useful for debugging / iterative workflows)
-    conv = sub.add_parser("convert-wav", help="Convert input audio to 16kHz mono PCM wav (ffmpeg).")
+    conv = sub.add_parser(
+        "convert-wav", help="Convert input audio to 16kHz mono PCM wav (ffmpeg)."
+    )
     conv.add_argument("--input", required=True)
     conv.add_argument("--output", required=True)
     conv.add_argument("--ffmpeg", default="ffmpeg")
 
-    sep = sub.add_parser("separate", help="Separate vocals via python-audio-separator wrapper.")
+    sep = sub.add_parser(
+        "separate", help="Separate vocals via python-audio-separator wrapper."
+    )
     sep.add_argument("--input-wav", required=True)
     sep.add_argument("--output-vocals", required=True)
     sep.add_argument(
@@ -147,12 +167,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     kana = sub.add_parser("kana", help="Convert text to spaced kana (pykakasi).")
     kana.add_argument("--text", required=True, help="Input text (Japanese).")
-    kana.add_argument("--output", required=True, help="Output .txt path for spaced kana.")
-    kana.add_argument("--kana-output", choices=["katakana", "hiragana"], default="katakana")
+    kana.add_argument(
+        "--output", required=True, help="Output .txt path for spaced kana."
+    )
+    kana.add_argument(
+        "--kana-output", choices=["katakana", "hiragana"], default="katakana"
+    )
 
     align = sub.add_parser("align", help="Run MFA align for one wav + transcript.")
     align.add_argument("--input-wav", required=True)
-    align.add_argument("--transcript", required=True, help="Spaced kana transcript (.txt).")
+    align.add_argument(
+        "--transcript", required=True, help="Spaced kana transcript (.txt)."
+    )
     align.add_argument("--output-textgrid", required=True)
     align.add_argument("--mfa", default="mfa")
     align.add_argument("--mfa-dict", required=True)

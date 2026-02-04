@@ -76,13 +76,19 @@ def run_mfa_align(
         wav_path = utt.with_suffix(".wav")
         lab_path = utt.with_suffix(".lab")
         wav_path.write_bytes(input_wav.read_bytes())
-        lab_path.write_text(transcript_spaced_kana.read_text(encoding="utf-8"), encoding="utf-8")
+        lab_path.write_text(
+            transcript_spaced_kana.read_text(encoding="utf-8"), encoding="utf-8"
+        )
 
         cmd = [
             exe,
             "align",
             str(corpus),
-            str(pronunciation_dict) if pronunciation_dict is not None else "japanese_mfa",
+            (
+                str(pronunciation_dict)
+                if pronunciation_dict is not None
+                else "japanese_mfa"
+            ),
             str(acoustic_model),
             str(out_dir),
             "--clean",
@@ -101,7 +107,9 @@ def run_mfa_align(
             # Try any TextGrid.
             produced = next(out_dir.glob("**/*.TextGrid"), None)
         if produced is None:
-            raise FileNotFoundError("MFA produced no TextGrid; check MFA logs and model/dict.")
+            raise FileNotFoundError(
+                "MFA produced no TextGrid; check MFA logs and model/dict."
+            )
         output_textgrid.write_bytes(produced.read_bytes())
 
 

@@ -84,6 +84,7 @@ def run_pipeline(
     ensure_wav_16k_mono(ffmpeg=ffmpeg, input_audio=input_path, output_wav=song_wav)
 
     vocals_wav = paths.audio_dir / "vocals.wav"
+    vad_speech_segments_ms: list[tuple[int, int]] | None = None
     if audio_separator:
         from karaoker.external.audio_separator import run_audio_separator
 
@@ -113,12 +114,14 @@ def run_pipeline(
             )
 
         vocals_dry_16k = paths.audio_dir / "vocals_dry.wav"
-        ensure_wav_16k_mono(ffmpeg=ffmpeg, input_audio=vocals_dry_raw, output_wav=vocals_dry_16k)
+        ensure_wav_16k_mono(
+            ffmpeg=ffmpeg, input_audio=vocals_dry_raw, output_wav=vocals_dry_16k
+        )
 
         if enable_silero_vad:
             from karaoker.external.silero_vad import zero_non_speech_with_silero_vad
 
-            zero_non_speech_with_silero_vad(
+            vad_speech_segments_ms = zero_non_speech_with_silero_vad(
                 input_wav=vocals_dry_16k,
                 output_wav=vocals_wav,
                 model_dir=_project_root() / "models" / "silero_vad",
@@ -126,6 +129,7 @@ def run_pipeline(
                 min_speech_duration_ms=silero_vad_min_speech_ms,
                 min_silence_duration_ms=silero_vad_min_silence_ms,
                 speech_pad_ms=silero_vad_speech_pad_ms,
+                output_segments_json=paths.asr_dir / "vad_speech.json",
             )
         else:
             shutil.copyfile(vocals_dry_16k, vocals_wav)
@@ -156,7 +160,9 @@ def run_pipeline(
         )
     else:
         if whisper_cpp is None or whisper_model is None:
-            raise ValueError("Either provide --lyrics-lrc or provide whisper_cpp + whisper_model for ASR.")
+            raise ValueError(
+                "Either provide --lyrics-lrc or provide whisper_cpp + whisper_model for ASR."
+            )
         asr_json = paths.asr_dir / "asr.json"
         asr_result = run_whisper_cpp(
             whisper_cpp=whisper_cpp,
@@ -164,19 +170,44 @@ def run_pipeline(
             input_wav=asr_input,
             output_json=asr_json,
         )
+        if vad_speech_segments_ms:
+            from karaoker.asr_postprocess import drop_whisper_hallucinations_in_silence
+
+            asr_result2 = drop_whisper_hallucinations_in_silence(
+                asr_result,
+                speech_segments_ms=vad_speech_segments_ms,
+            )
+            if asr_result2 is not asr_result:
+                raw_path = asr_json.with_suffix(".raw.json")
+                shutil.copyfile(asr_json, raw_path)
+                asr_json.write_text(
+                    json.dumps(asr_result2, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                asr_result = asr_result2
         # Expect whisper.cpp JSON output with a top-level "transcription" list.
-        transcription = asr_result.get("transcription") if isinstance(asr_result, dict) else None
+        transcription = (
+            asr_result.get("transcription") if isinstance(asr_result, dict) else None
+        )
         if not isinstance(transcription, list):
-            keys = list(asr_result.keys()) if isinstance(asr_result, dict) else type(asr_result).__name__
+            keys = (
+                list(asr_result.keys())
+                if isinstance(asr_result, dict)
+                else type(asr_result).__name__
+            )
             raise ValueError(
                 "Unexpected whisper.cpp JSON schema (expected top-level 'transcription'). "
                 f"See: {asr_json} (top-level keys: {keys})"
             )
         transcript_text = " ".join(
-            str(seg.get("text", "")).strip() for seg in transcription if isinstance(seg, dict)
+            str(seg.get("text", "")).strip()
+            for seg in transcription
+            if isinstance(seg, dict)
         ).strip()
         if not transcript_text:
-            raise ValueError(f"whisper.cpp JSON 'transcription' contained no text. See: {asr_json}")
+            raise ValueError(
+                f"whisper.cpp JSON 'transcription' contained no text. See: {asr_json}"
+            )
         script_text = transcript_text
 
     # 3) Kana conversion (pykakasi) + prepare MFA corpus
@@ -197,7 +228,9 @@ def run_pipeline(
             out_wav = corpus_dir / f"{utt_id}.wav"
             out_lab = corpus_dir / f"{utt_id}.lab"
 
-            kana_spaced, units = to_spaced_kana_with_units(line.text, output=kana_output)
+            kana_spaced, units = to_spaced_kana_with_units(
+                line.text, output=kana_output
+            )
             out_lab.write_text(kana_spaced + "\n", encoding="utf-8")
             kana_lines.append(kana_spaced)
             lrc_script_units.append(units)
@@ -213,17 +246,23 @@ def run_pipeline(
                 output_wav=out_wav,
             )
         # Also write a convenience joined transcript.
-        (paths.transcript_dir / "kana_spaced.txt").write_text("\n".join(kana_lines) + "\n", encoding="utf-8")
+        (paths.transcript_dir / "kana_spaced.txt").write_text(
+            "\n".join(kana_lines) + "\n", encoding="utf-8"
+        )
         (paths.transcript_dir / "script.txt").write_text(
             "\n".join(x.text for x in lrc_lines) + "\n",
             encoding="utf-8",
         )
     else:
         # Single-utterance transcript (ASR path).
-        kana_spaced, asr_script_units = to_spaced_kana_with_units(script_text or "", output=kana_output)
+        kana_spaced, asr_script_units = to_spaced_kana_with_units(
+            script_text or "", output=kana_output
+        )
         kana_spaced_path = paths.transcript_dir / "kana_spaced.txt"
         kana_spaced_path.write_text(kana_spaced + "\n", encoding="utf-8")
-        (paths.transcript_dir / "script.txt").write_text((script_text or "") + "\n", encoding="utf-8")
+        (paths.transcript_dir / "script.txt").write_text(
+            (script_text or "") + "\n", encoding="utf-8"
+        )
         all_kana_tokens = kana_spaced.split()
 
     # 4) MFA forced alignment (TextGrid)
@@ -234,9 +273,16 @@ def run_pipeline(
         words_path = paths.alignment_dir / "words.txt"
         words_path.write_text("\n".join(tokens) + "\n", encoding="utf-8")
 
-        g2p_model = "japanese_katakana_mfa" if kana_output == "katakana" else "japanese_mfa"
+        g2p_model = (
+            "japanese_katakana_mfa" if kana_output == "katakana" else "japanese_mfa"
+        )
         gen_dict = paths.alignment_dir / "g2p.dict"
-        run_mfa_g2p(mfa=mfa, word_list=words_path, g2p_model=g2p_model, output_dictionary=gen_dict)
+        run_mfa_g2p(
+            mfa=mfa,
+            word_list=words_path,
+            g2p_model=g2p_model,
+            output_dictionary=gen_dict,
+        )
         mfa_dict_to_use = str(gen_dict)
 
     script_units_events: list[dict[str, object]] | None = None
@@ -302,7 +348,11 @@ def run_pipeline(
     # 5) Parse TextGrid -> JSON
     source_meta: dict[str, object]
     if lrc_lines:
-        source_meta = {"type": "lrc", "path": str(lyrics_lrc), "num_lines": len(lrc_lines)}
+        source_meta = {
+            "type": "lrc",
+            "path": str(lyrics_lrc),
+            "num_lines": len(lrc_lines),
+        }
     else:
         source_meta = {"type": "asr", "path": str(paths.asr_dir / "asr.json")}
 

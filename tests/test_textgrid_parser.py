@@ -38,4 +38,3 @@ def test_textgrid_fallback_parser(tmp_path: Path):
     assert "kana" in tiers
     events = textgrid_to_kana_events(tg)
     assert [e["text"] for e in events] == ["サ", "ン"]
-
