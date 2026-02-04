@@ -35,6 +35,18 @@ def _k(cs: int) -> str:
     return r"{\k" + str(max(1, int(cs))) + "}"
 
 
+def _hira_to_kata(text: str) -> str:
+    # Hiragana [ぁ..ゖ] maps 1:1 to Katakana [ァ..ヶ] by +0x60 codepoint offset.
+    out: list[str] = []
+    for ch in text:
+        o = ord(ch)
+        if 0x3041 <= o <= 0x3096:
+            out.append(chr(o + 0x60))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 @dataclass(frozen=True)
 class TimedUnit:
     start: float
@@ -56,6 +68,158 @@ def _iter_script_units(data: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(su, list):
         return [x for x in su if isinstance(x, dict)]
     return []
+
+
+def _iter_events(data: dict[str, Any]) -> list[dict[str, Any]]:
+    evs = data.get("events")
+    if isinstance(evs, list):
+        return [x for x in evs if isinstance(x, dict)]
+    return []
+
+
+def _events_by_segment_ref_kana_i(
+    events: list[dict[str, Any]],
+) -> dict[int | None, dict[int, dict[str, Any]]]:
+    """
+    Build a lookup map for aligned per-kana events.
+
+    karaoker enriches events with `ref_kana_i`. Depending on the pipeline version this index can be:
+      - global (monotonic across the whole track), or
+      - segment-local (restarts from 0 for each segment; includes `segment_i`).
+
+    We key by `(segment_i, ref_kana_i)` when `segment_i` is present, otherwise use `None`.
+    """
+    out: dict[int | None, dict[int, dict[str, Any]]] = {}
+    for e in events:
+        rk = e.get("ref_kana_i")
+        if rk is None:
+            continue
+        try:
+            rk_i = int(rk)
+        except Exception:
+            continue
+
+        seg_key: int | None = None
+        if e.get("segment_i") is not None:
+            try:
+                seg_key = int(e["segment_i"])
+            except Exception:
+                seg_key = None
+
+        # Validate timing early so callers can assume start/end are present and numeric.
+        try:
+            float(e["start"])
+            float(e["end"])
+        except Exception:
+            continue
+
+        bucket = out.setdefault(seg_key, {})
+        # Prefer first occurrence if duplicates exist.
+        bucket.setdefault(rk_i, e)
+    return out
+
+
+def _ref_kana_tokens_by_segment(data: dict[str, Any]) -> dict[int | None, list[str]]:
+    """
+    Return ref_kana tokens keyed by segment_i when available, otherwise by None.
+    """
+    out: dict[int | None, list[str]] = {}
+
+    script = data.get("script")
+    if isinstance(script, dict) and isinstance(script.get("ref_kana"), str):
+        out[None] = script["ref_kana"].split()
+
+    segs = data.get("segments")
+    if isinstance(segs, list):
+        for idx, seg in enumerate(segs):
+            if not isinstance(seg, dict):
+                continue
+            rk = seg.get("ref_kana")
+            if not isinstance(rk, str):
+                continue
+            seg_i_raw = seg.get("i", idx)
+            try:
+                seg_i = int(seg_i_raw)
+            except Exception:
+                seg_i = idx
+            out[seg_i] = rk.split()
+
+    return out
+
+
+def _expand_script_unit_to_syllables(
+    u: dict[str, Any],
+    *,
+    ref_kana_tokens: list[str],
+    events_by_ref_kana_i: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """
+    If this script unit is pure kana, expand it to per-(ref_kana) syllable timing.
+
+    We only expand when the script unit's visible text maps 1:1 to its reading, so
+    we can safely assign each kana token to a substring of the displayed text.
+    """
+    try:
+        char_start = int(u["char_start"])
+        char_end = int(u["char_end"])
+    except Exception:
+        return None
+    if char_end <= char_start:
+        return None
+
+    text = u.get("text")
+    reading = u.get("reading")
+    if not isinstance(text, str) or not isinstance(reading, str) or not reading:
+        return None
+
+    try:
+        rk_start = int(u["ref_kana_start"])
+        rk_end = int(u["ref_kana_end"])
+    except Exception:
+        return None
+    if rk_end <= rk_start:
+        return None
+    if rk_start < 0 or rk_end > len(ref_kana_tokens):
+        return None
+
+    # Only expand when the unit text is kana that matches the reading exactly.
+    if _hira_to_kata(text) != reading:
+        return None
+    if "".join(ref_kana_tokens[rk_start:rk_end]) != reading:
+        return None
+
+    # Ensure char span length matches the rendered text; otherwise mapping is unsafe.
+    if (char_end - char_start) != len(text):
+        return None
+
+    out: list[dict[str, Any]] = []
+    pos = 0
+    for ref_i in range(rk_start, rk_end):
+        tok = ref_kana_tokens[ref_i]
+        if not tok:
+            return None
+        if reading[pos : pos + len(tok)] != tok:
+            return None
+
+        ev = events_by_ref_kana_i.get(ref_i)
+        if ev is None:
+            return None
+        start = float(ev["start"])
+        end = float(ev["end"])
+
+        out.append(
+            {
+                "start": start,
+                "end": end,
+                "char_start": char_start + pos,
+                "char_end": char_start + pos + len(tok),
+            }
+        )
+        pos += len(tok)
+
+    if pos != len(text):
+        return None
+    return out
 
 
 def _iter_lines(data: dict[str, Any]) -> list[Line]:
@@ -213,6 +377,7 @@ def subtitles_json_to_ass(
     Convert karaoker `subtitles.json` to ASS karaoke subtitles.
     """
     raw_units = _iter_script_units(data)
+    raw_events = _iter_events(data)
     lines = _iter_lines(data)
 
     # Pick script text source.
@@ -276,6 +441,11 @@ def subtitles_json_to_ass(
         if script_text is None:
             script_text = ""
 
+        # Optional: use per-kana (syllable) timing to improve \k accuracy when the
+        # displayed script unit is kana and matches its reading.
+        ref_kana_tokens_by_seg = _ref_kana_tokens_by_segment(data)
+        events_by_seg = _events_by_segment_ref_kana_i(raw_events)
+
         chunks = _chunk_script_units(
             raw_units,
             gap_threshold_s=float(gap_threshold_s),
@@ -312,9 +482,38 @@ def subtitles_json_to_ass(
                 ce = max(cs, min(ce, len(script_text)))
                 full_text = script_text[cs:ce]
 
-                # Shift unit char offsets into the chunk-local text.
-                shifted: list[dict[str, Any]] = []
+                # Expand kana-only units to per-syllable timing where possible, then shift
+                # unit char offsets into the chunk-local text.
+                expanded: list[dict[str, Any]] = []
                 for u in chunk:
+                    seg_key: int | None = None
+                    if u.get("segment_i") is not None:
+                        try:
+                            seg_key = int(u["segment_i"])
+                        except Exception:
+                            seg_key = None
+
+                    ref_kana_tokens = ref_kana_tokens_by_seg.get(seg_key) or ref_kana_tokens_by_seg.get(
+                        None, []
+                    )
+                    by_ref = events_by_seg.get(seg_key) or events_by_seg.get(None, {})
+
+                    pieces = (
+                        _expand_script_unit_to_syllables(
+                            u,
+                            ref_kana_tokens=ref_kana_tokens,
+                            events_by_ref_kana_i=by_ref,
+                        )
+                        if ref_kana_tokens and by_ref
+                        else None
+                    )
+                    if pieces is not None:
+                        expanded.extend(pieces)
+                    else:
+                        expanded.append(u)
+
+                shifted: list[dict[str, Any]] = []
+                for u in expanded:
                     u2 = dict(u)
                     u2["char_start"] = int(u["char_start"]) - cs
                     u2["char_end"] = int(u["char_end"]) - cs

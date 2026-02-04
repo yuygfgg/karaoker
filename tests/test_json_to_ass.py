@@ -102,3 +102,141 @@ def test_asr_mode_chunks_on_gaps():
     assert ass.count("Dialogue:") == 2
     assert "一行目" in ass
     assert "二行目" in ass
+
+
+def test_asr_mode_uses_per_kana_events_when_unit_text_matches_reading():
+    mod = _load_json_to_ass_module()
+
+    # "せる" is pure hiragana and matches the unit reading "セル", so we can safely
+    # map per-kana timing onto the displayed script text.
+    data = {
+        "version": 2,
+        "language": "ja",
+        "units": "kana",
+        "source": {"type": "asr"},
+        "script": {"text": "せる夢", "ref_kana": "セ ル ユ メ"},
+        "script_units": [
+            {
+                "i": 0,
+                "start": 0.0,
+                "end": 0.10,
+                "text": "せる",
+                "char_start": 0,
+                "char_end": 2,
+                "reading": "セル",
+                "ref_kana_start": 0,
+                "ref_kana_end": 2,
+            },
+            # "夢" (kanji) does not match its reading 1:1, so it should remain a single unit.
+            {
+                "i": 1,
+                "start": 0.10,
+                "end": 0.30,
+                "text": "夢",
+                "char_start": 2,
+                "char_end": 3,
+                "reading": "ユメ",
+                "ref_kana_start": 2,
+                "ref_kana_end": 4,
+            },
+        ],
+        "events": [
+            {"i": 0, "start": 0.00, "end": 0.05, "text": "セ", "tier": "words", "ref_kana_i": 0},
+            {"i": 1, "start": 0.05, "end": 0.10, "text": "ル", "tier": "words", "ref_kana_i": 1},
+            {"i": 2, "start": 0.10, "end": 0.20, "text": "ユ", "tier": "words", "ref_kana_i": 2},
+            {"i": 3, "start": 0.20, "end": 0.30, "text": "メ", "tier": "words", "ref_kana_i": 3},
+        ],
+    }
+
+    ass = mod.subtitles_json_to_ass(data, gap_threshold_s=5.0, max_caption_s=20.0)
+    assert r"{\k5}せ{\k5}る" in ass
+    assert r"{\k20}夢" in ass
+
+
+def test_asr_mode_uses_segment_local_ref_kana_indices():
+    mod = _load_json_to_ass_module()
+
+    # Segment-local `ref_kana_i` restarts from 0 for each segment, so the converter must
+    # key events by (segment_i, ref_kana_i) instead of just ref_kana_i.
+    data = {
+        "version": 2,
+        "language": "ja",
+        "units": "kana",
+        "source": {"type": "asr"},
+        # Intentionally wrong global ref_kana so we only succeed if we use segments' ref_kana.
+        "script": {"text": "せるせる", "ref_kana": "ガ ツ"},
+        "segments": [
+            {"i": 0, "start": 0.0, "end": 0.1, "text": "せる", "ref_kana": "セ ル"},
+            {"i": 1, "start": 1.0, "end": 1.1, "text": "せる", "ref_kana": "セ ル"},
+        ],
+        "script_units": [
+            {
+                "i": 0,
+                "segment_i": 0,
+                "start": 0.0,
+                "end": 0.10,
+                "text": "せる",
+                "char_start": 0,
+                "char_end": 2,
+                "reading": "セル",
+                "ref_kana_start": 0,
+                "ref_kana_end": 2,
+            },
+            {
+                "i": 1,
+                "segment_i": 1,
+                "start": 1.0,
+                "end": 1.10,
+                "text": "せる",
+                "char_start": 2,
+                "char_end": 4,
+                "reading": "セル",
+                "ref_kana_start": 0,
+                "ref_kana_end": 2,
+            },
+        ],
+        "events": [
+            {
+                "i": 0,
+                "segment_i": 0,
+                "ref_kana_i": 0,
+                "start": 0.00,
+                "end": 0.05,
+                "text": "セ",
+                "tier": "words",
+            },
+            {
+                "i": 1,
+                "segment_i": 0,
+                "ref_kana_i": 1,
+                "start": 0.05,
+                "end": 0.10,
+                "text": "ル",
+                "tier": "words",
+            },
+            {
+                "i": 2,
+                "segment_i": 1,
+                "ref_kana_i": 0,
+                "start": 1.00,
+                "end": 1.05,
+                "text": "セ",
+                "tier": "words",
+            },
+            {
+                "i": 3,
+                "segment_i": 1,
+                "ref_kana_i": 1,
+                "start": 1.05,
+                "end": 1.10,
+                "text": "ル",
+                "tier": "words",
+            },
+        ],
+    }
+
+    # Keep as a single caption so we can assert on the inserted gap.
+    ass = mod.subtitles_json_to_ass(data, gap_threshold_s=5.0, max_caption_s=20.0)
+    assert r"{\k5}せ{\k5}る" in ass
+    # Gap from 0.10 -> 1.00 is 0.90s = 90cs.
+    assert r"{\k90}" in ass
