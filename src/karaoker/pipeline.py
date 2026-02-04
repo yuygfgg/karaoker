@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from karaoker.external.ffmpeg import ensure_wav_16k_mono
-from karaoker.external.mfa import run_mfa_align, run_mfa_align_corpus, run_mfa_g2p
+from karaoker.external.mfa import run_mfa_align_corpus, run_mfa_g2p
 from karaoker.external.whispercpp import run_whisper_cpp
 from karaoker.lyrics import parse_lrc
 from karaoker.mapping import map_kana_events_to_script, to_spaced_kana_with_units
@@ -38,6 +40,49 @@ class PipelinePaths:
 def _project_root() -> Path:
     # repo_root/src/karaoker/pipeline.py -> parents[2] == repo_root
     return Path(__file__).resolve().parents[2]
+
+
+_RE_WHISPER_TIMESTAMP = re.compile(
+    r"^(?P<h>\\d+):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})(?:[,.](?P<ms>[0-9]{1,3}))?$"
+)
+
+
+def _parse_whisper_timestamp_seconds(ts: str) -> float | None:
+    """
+    Parse whisper.cpp timestamps like "00:01:23,456" into seconds.
+
+    Returns None if parsing fails.
+    """
+    m = _RE_WHISPER_TIMESTAMP.match(ts.strip())
+    if not m:
+        return None
+    h = int(m.group("h"))
+    mm = int(m.group("m"))
+    ss = int(m.group("s"))
+    ms_raw = m.group("ms") or "0"
+    ms = int(ms_raw.ljust(3, "0")[:3])
+    return h * 3600 + mm * 60 + ss + ms / 1000.0
+
+
+def _whisper_segment_bounds_seconds(seg: dict[str, Any]) -> tuple[float, float] | None:
+    offsets = seg.get("offsets")
+    if isinstance(offsets, dict):
+        start = offsets.get("from")
+        end = offsets.get("to")
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+            return float(start) / 1000.0, float(end) / 1000.0
+
+    ts = seg.get("timestamps")
+    if isinstance(ts, dict):
+        start = ts.get("from")
+        end = ts.get("to")
+        if isinstance(start, str) and isinstance(end, str):
+            start_s = _parse_whisper_timestamp_seconds(start)
+            end_s = _parse_whisper_timestamp_seconds(end)
+            if start_s is not None and end_s is not None:
+                return start_s, end_s
+
+    return None
 
 
 def run_pipeline(
@@ -144,6 +189,7 @@ def run_pipeline(
         lrc_lines = parse_lrc(lyrics_lrc)
 
     script_text: str | None = None
+    whisper_transcription: list[dict[str, Any]] | None = None
     if lrc_lines:
         (paths.asr_dir / "asr.json").write_text(
             json.dumps(
@@ -199,25 +245,20 @@ def run_pipeline(
                 "Unexpected whisper.cpp JSON schema (expected top-level 'transcription'). "
                 f"See: {asr_json} (top-level keys: {keys})"
             )
-        transcript_text = " ".join(
-            str(seg.get("text", "")).strip()
-            for seg in transcription
-            if isinstance(seg, dict)
-        ).strip()
-        if not transcript_text:
-            raise ValueError(
-                f"whisper.cpp JSON 'transcription' contained no text. See: {asr_json}"
-            )
-        script_text = transcript_text
+        whisper_transcription = [seg for seg in transcription if isinstance(seg, dict)]
 
     # 3) Kana conversion (pykakasi) + prepare MFA corpus
     corpus_dir = paths.alignment_dir / "corpus"
     corpus_dir.mkdir(parents=True, exist_ok=True)
+    # Avoid stale utterances from previous runs in the same workdir.
+    for p in list(corpus_dir.glob("utt_*.wav")) + list(corpus_dir.glob("utt_*.lab")):
+        p.unlink(missing_ok=True)
 
     all_kana_tokens: list[str] = []
     lrc_kana_spaced: list[str] | None = None
     lrc_script_units = None
-    asr_script_units = None
+    asr_segments_for_mfa: list[dict[str, Any]] | None = None
+    asr_ref_kana: str = ""
     if lrc_lines:
         # Split audio + transcripts by LRC line times to make alignment feasible.
         kana_lines = []
@@ -254,16 +295,90 @@ def run_pipeline(
             encoding="utf-8",
         )
     else:
-        # Single-utterance transcript (ASR path).
-        kana_spaced, asr_script_units = to_spaced_kana_with_units(
-            script_text or "", output=kana_output
+        # ASR path: use whisper.cpp segments as coarse timestamps, then align each segment separately.
+        if whisper_transcription is None:
+            raise ValueError("Internal error: ASR selected but whisper transcription is missing.")
+
+        from karaoker.external.ffmpeg import cut_wav_segment
+
+        script_parts: list[str] = []
+        script_len = 0
+        asr_segments_for_mfa = []
+        kana_lines: list[str] = []
+
+        for whisper_i, seg in enumerate(whisper_transcription):
+            text = str(seg.get("text", "")).strip()
+            if not text:
+                continue
+
+            bounds = _whisper_segment_bounds_seconds(seg)
+            if bounds is None:
+                continue
+            start_s, end_s = bounds
+            start_s = max(0.0, float(start_s))
+            end_s = float(end_s)
+            if end_s <= start_s:
+                # Keep a minimum duration to avoid ffmpeg/MFA edge cases.
+                end_s = start_s + 0.5
+
+            kana_spaced, units = to_spaced_kana_with_units(text, output=kana_output)
+            kana_spaced = kana_spaced.strip()
+            if not kana_spaced:
+                # Nothing MFA can align (e.g. pure ASCII).
+                continue
+
+            if script_parts:
+                script_len += 1  # space separator
+            char_offset = script_len
+            script_parts.append(text)
+            script_len += len(text)
+
+            utt_id = f"utt_{len(asr_segments_for_mfa):04d}"
+            out_wav = corpus_dir / f"{utt_id}.wav"
+            out_lab = corpus_dir / f"{utt_id}.lab"
+
+            out_lab.write_text(kana_spaced + "\n", encoding="utf-8")
+            kana_lines.append(kana_spaced)
+            all_kana_tokens.extend(kana_spaced.split())
+
+            cut_wav_segment(
+                ffmpeg=ffmpeg,
+                input_wav=asr_input,
+                start_seconds=start_s,
+                end_seconds=end_s,
+                output_wav=out_wav,
+            )
+
+            asr_segments_for_mfa.append(
+                {
+                    "utt_id": utt_id,
+                    "whisper_i": whisper_i,
+                    "start": start_s,
+                    "end": end_s,
+                    "text": text,
+                    "units": units,
+                    "char_offset": char_offset,
+                    "ref_kana": kana_spaced,
+                }
+            )
+
+        script_text = " ".join(script_parts).strip()
+        if not script_text:
+            raise ValueError("whisper.cpp JSON 'transcription' contained no usable text to align.")
+        if not asr_segments_for_mfa:
+            raise ValueError(
+                "whisper.cpp produced no usable kana segments to align. "
+                "Try providing --lyrics-lrc or a different whisper model."
+            )
+
+        # Convenience transcripts (one segment per line, like LRC mode).
+        (paths.transcript_dir / "kana_spaced.txt").write_text(
+            "\n".join(kana_lines) + "\n", encoding="utf-8"
         )
-        kana_spaced_path = paths.transcript_dir / "kana_spaced.txt"
-        kana_spaced_path.write_text(kana_spaced + "\n", encoding="utf-8")
         (paths.transcript_dir / "script.txt").write_text(
-            (script_text or "") + "\n", encoding="utf-8"
+            "\n".join(script_parts) + "\n", encoding="utf-8"
         )
-        all_kana_tokens = kana_spaced.split()
+        asr_ref_kana = " ".join(kana_lines).strip()
 
     # 4) MFA forced alignment (TextGrid)
     # If no dictionary is provided, generate one from the kana tokens using an MFA G2P model.
@@ -288,6 +403,9 @@ def run_pipeline(
     script_units_events: list[dict[str, object]] | None = None
     if lrc_lines:
         out_dir = paths.alignment_dir / "textgrids"
+        # Avoid reading stale TextGrids if MFA fails to regenerate a subset.
+        for p in out_dir.rglob("*.TextGrid"):
+            p.unlink(missing_ok=True)
         run_mfa_align_corpus(
             mfa=mfa,
             corpus_dir=corpus_dir,
@@ -327,23 +445,74 @@ def run_pipeline(
         for i, e in enumerate(events):
             e["i"] = i
     else:
-        textgrid_path = paths.alignment_dir / "aligned.TextGrid"
-        run_mfa_align(
+        if asr_segments_for_mfa is None:
+            raise ValueError("Internal error: ASR selected but ASR segments were not prepared.")
+
+        out_dir = paths.alignment_dir / "textgrids"
+        # Avoid reading stale TextGrids if MFA fails to regenerate a subset.
+        for p in out_dir.rglob("*.TextGrid"):
+            p.unlink(missing_ok=True)
+        run_mfa_align_corpus(
             mfa=mfa,
-            input_wav=asr_input,
-            transcript_spaced_kana=kana_spaced_path,
+            corpus_dir=corpus_dir,
             pronunciation_dict=mfa_dict_to_use,
             acoustic_model=mfa_acoustic_model,
-            output_textgrid=textgrid_path,
+            output_dir=out_dir,
         )
-        events0 = textgrid_to_kana_events(textgrid_path)
-        mapped_events, script_units_events0 = map_kana_events_to_script(
-            script_text=script_text or "",
-            script_units=asr_script_units or [],
-            kana_events=events0,
-        )
-        events = mapped_events
-        script_units_events = script_units_events0
+
+        events = []
+        script_units_events = []
+        unit_base = 0
+        for seg_i, seg in enumerate(asr_segments_for_mfa):
+            utt_id = str(seg["utt_id"])
+            tg = out_dir / f"{utt_id}.TextGrid"
+            if not tg.exists():
+                # MFA sometimes skips utterances (e.g., empty alignment). Keep going.
+                unit_base += len(seg.get("units", []))
+                continue
+
+            seg_events0 = textgrid_to_kana_events(tg, offset_seconds=float(seg["start"]))
+            # Preserve per-segment indices before global reindexing.
+            for e in seg_events0:
+                e["segment_i"] = seg_i
+                e["segment_event_i"] = e.get("i")
+                e["utt_id"] = utt_id
+                e["whisper_i"] = int(seg["whisper_i"])
+
+            mapped_seg_events, timed_units = map_kana_events_to_script(
+                script_text=str(seg["text"]),
+                script_units=seg["units"],  # type: ignore[arg-type]
+                kana_events=seg_events0,
+            )
+
+            char_offset = int(seg["char_offset"])
+            for e in mapped_seg_events:
+                e["segment_i"] = seg_i
+                e["utt_id"] = utt_id
+                e["whisper_i"] = int(seg["whisper_i"])
+                if isinstance(e.get("script_unit_i"), int):
+                    e["script_unit_i"] = int(e["script_unit_i"]) + unit_base
+                if isinstance(e.get("script_char_start"), int):
+                    e["script_char_start"] = int(e["script_char_start"]) + char_offset
+                if isinstance(e.get("script_char_end"), int):
+                    e["script_char_end"] = int(e["script_char_end"]) + char_offset
+
+            for u in timed_units:
+                u["segment_i"] = seg_i
+                u["utt_id"] = utt_id
+                u["whisper_i"] = int(seg["whisper_i"])
+                u["i"] = int(u["i"]) + unit_base
+                u["char_start"] = int(u["char_start"]) + char_offset
+                u["char_end"] = int(u["char_end"]) + char_offset
+
+            events.extend(mapped_seg_events)
+            script_units_events.extend(timed_units)
+            unit_base += len(seg.get("units", []))
+
+        # Re-index events globally by time.
+        events.sort(key=lambda e: float(e["start"]))  # type: ignore[index]
+        for i, e in enumerate(events):
+            e["i"] = i
 
     # 5) Parse TextGrid -> JSON
     source_meta: dict[str, object]
@@ -376,7 +545,20 @@ def run_pipeline(
             for i, x in enumerate(lrc_lines)
         ]
     else:
-        out["script"] = {"text": script_text or "", "ref_kana": kana_spaced}
+        out["script"] = {"text": script_text or "", "ref_kana": asr_ref_kana}
+        if asr_segments_for_mfa is not None:
+            out["segments"] = [
+                {
+                    "i": i,
+                    "utt_id": str(seg.get("utt_id", "")),
+                    "whisper_i": int(seg.get("whisper_i", i)),
+                    "start": round(float(seg.get("start", 0.0)), 4),
+                    "end": round(float(seg.get("end", 0.0)), 4),
+                    "text": str(seg.get("text", "")),
+                    "ref_kana": str(seg.get("ref_kana", "")),
+                }
+                for i, seg in enumerate(asr_segments_for_mfa)
+            ]
 
     if script_units_events is not None:
         out["script_units"] = script_units_events

@@ -1,6 +1,6 @@
 # karaoker
 
-Local-first Japanese karaoke subtitle generator that produces per-kana (roughly per-mora) timing JSON.
+Local Japanese karaoke subtitle generator.
 
 It integrates with:
 
@@ -12,10 +12,9 @@ It integrates with:
    `.TextGrid`.
 6. TextGrid parsing to generate the final JSON subtitle events.
 
-## Status / Scope
+## Status
 
 - Language: Japanese only.
-- Subtitle granularity: kana tokens (katakana by default).
 
 ## Requirements (External Tools)
 
@@ -80,7 +79,7 @@ Outputs:
 - `workdir/audio/vocals_dry.wav` (pre-VAD, de-reverbed 16k mono)
 - `workdir/asr/asr.json`
 - `workdir/transcript/kana_spaced.txt`
-- `workdir/alignment/aligned.TextGrid`
+- `workdir/alignment/textgrids/utt_XXXX.TextGrid` (one per LRC line or ASR segment)
 - `workdir/output/subtitles.json`
 
 ## Step-By-Step Commands
