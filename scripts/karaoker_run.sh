@@ -21,6 +21,11 @@ Usage:
   ./scripts/karaoker_run.sh --input <audio> --workdir <dir> [options]
 
 Options:
+  --asr-backend <whispercpp|gemini>    Default: whispercpp. Ignored when --lrc is set.
+  --kana-backend <pykakasi|gemini>     Default: pykakasi.
+  --gemini-model <name>               Default: gemini-3-flash-preview.
+                                      Gemini backends require `GEMINI_API_KEY` and `pip install -e ".[gemini]"`.
+
   --lrc <path>                 Use an .lrc file as lyrics (recommended). Skips ASR.
   --separate                   Enable vocal separation (python-audio-separator) (default).
   --no-separate                Disable separation.
@@ -42,6 +47,9 @@ USAGE
 INPUT=""
 LRC=""
 WORKDIR=""
+ASR_BACKEND="whispercpp"
+KANA_BACKEND="pykakasi"
+GEMINI_MODEL="gemini-3-flash-preview"
 SEPARATE=1
 DOWNLOAD_MODELS=0
 KANA_OUTPUT="katakana"
@@ -59,6 +67,9 @@ while [[ $# -gt 0 ]]; do
     --input) INPUT="${2:-}"; shift 2 ;;
     --lrc) LRC="${2:-}"; shift 2 ;;
     --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --asr-backend) ASR_BACKEND="${2:-}"; shift 2 ;;
+    --kana-backend) KANA_BACKEND="${2:-}"; shift 2 ;;
+    --gemini-model) GEMINI_MODEL="${2:-}"; shift 2 ;;
     --separate) SEPARATE=1; shift ;;
     --no-separate) SEPARATE=0; shift ;;
     --download-models) DOWNLOAD_MODELS=1; shift ;;
@@ -213,7 +224,7 @@ if [[ "${DOWNLOAD_MODELS}" -eq 1 ]]; then
       ensure_silero_vad_model
     fi
   fi
-  # Whisper model is downloaded on-demand when ASR is used (no --lrc).
+  # Whisper model is downloaded on-demand when ASR backend is whispercpp (no --lrc).
 fi
 
 mkdir -p "${WORKDIR}"
@@ -222,6 +233,9 @@ cmd=(
   "${ENV_PREFIX}/bin/karaoker" run
   --input "${INPUT}"
   --workdir "${WORKDIR}"
+  --asr-backend "${ASR_BACKEND}"
+  --kana-backend "${KANA_BACKEND}"
+  --gemini-model "${GEMINI_MODEL}"
   --ffmpeg "${FFMPEG}"
   --mfa "${MFA}"
   --kana-output "${KANA_OUTPUT}"
@@ -231,9 +245,19 @@ cmd=(
 if [[ -n "${LRC}" ]]; then
   cmd+=( --lyrics-lrc "${LRC}" )
 else
-  # ASR path (offline via whisper.cpp). We accept a model *name* and download if missing.
-  ensure_whisper_model
-  cmd+=( --whisper-cpp "${WHISPER_CLI}" --whisper-model "$(whisper_model_path)" )
+  case "${ASR_BACKEND}" in
+    whispercpp)
+      # ASR path (offline via whisper.cpp). We accept a model *name* and download if missing.
+      ensure_whisper_model
+      cmd+=( --whisper-cpp "${WHISPER_CLI}" --whisper-model "$(whisper_model_path)" )
+      ;;
+    gemini)
+      # Gemini ASR path. Requires GEMINI_API_KEY in the environment.
+      ;;
+    *)
+      die "unknown --asr-backend: ${ASR_BACKEND} (expected whispercpp|gemini)"
+      ;;
+  esac
 fi
 
 if [[ -n "${MFA_DICT}" ]]; then

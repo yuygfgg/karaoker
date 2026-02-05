@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from karaoker.aligner import MfaAlignerProvider
-from karaoker.kana import PykakasiKanaConverter
+from karaoker.kana_convert import KanaConverter, build_kana_converter
 from karaoker.pipeline_stages import (
     AlignmentStage,
     AudioStage,
@@ -14,7 +14,11 @@ from karaoker.pipeline_stages import (
     WorkspaceStage,
 )
 from karaoker.pipeline_types import PipelineConfig, PipelineContext, PipelinePaths
-from karaoker.transcript import LrcTranscriptProvider, TranscriptProvider, WhisperCppTranscriptProvider
+from karaoker.transcript import (
+    LrcTranscriptProvider,
+    TranscriptProvider,
+)
+from karaoker.transcript.asr.base import build_asr_transcript_provider
 
 
 class KaraokerPipeline:
@@ -22,7 +26,7 @@ class KaraokerPipeline:
         self,
         *,
         transcript_provider: TranscriptProvider,
-        kana_converter: PykakasiKanaConverter,
+        kana_converter: KanaConverter,
         aligner: MfaAlignerProvider,
     ) -> None:
         self._stages = [
@@ -49,11 +53,14 @@ def build_default_pipeline(config: PipelineConfig) -> KaraokerPipeline:
             lyrics_path=config.lyrics_lrc
         )
     else:
-        transcript_provider = WhisperCppTranscriptProvider()
+        transcript_provider = build_asr_transcript_provider(
+            config.asr_backend,
+            model=config.gemini_model,
+        )
 
     return KaraokerPipeline(
         transcript_provider=transcript_provider,
-        kana_converter=PykakasiKanaConverter(),
+        kana_converter=build_kana_converter(config.kana_backend, model=config.gemini_model),
         aligner=MfaAlignerProvider(mfa=config.mfa),
     )
 
@@ -72,13 +79,16 @@ def run_pipeline(
     silero_vad_min_speech_ms: int = 250,
     silero_vad_min_silence_ms: int = 100,
     silero_vad_speech_pad_ms: int = 30,
-    whisper_cpp: str | None,
-    whisper_model: Path | None,
+    whisper_cpp: str | None = None,
+    whisper_model: Path | None = None,
     mfa: str,
     mfa_dict: str | None,
     mfa_acoustic_model: str,
     kana_output: str,
     lyrics_lrc: Path | None = None,
+    asr_backend: str = "whispercpp",
+    kana_backend: str = "pykakasi",
+    gemini_model: str = "gemini-3-flash-preview",
 ) -> None:
     """
     Generate per-kana timing events for a song: audio -> transcript -> MFA alignment -> JSON.
@@ -106,6 +116,9 @@ def run_pipeline(
         mfa_acoustic_model=mfa_acoustic_model,
         kana_output=kana_output,
         lyrics_lrc=lyrics_lrc,
+        asr_backend=asr_backend,
+        kana_backend=kana_backend,
+        gemini_model=gemini_model,
     )
 
     pipeline = build_default_pipeline(config)

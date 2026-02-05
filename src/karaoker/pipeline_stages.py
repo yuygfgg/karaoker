@@ -6,7 +6,7 @@ from pathlib import Path
 
 from karaoker.aligner import AlignerProvider
 from karaoker.external.ffmpeg import cut_wav_segment, ensure_wav_16k_mono
-from karaoker.kana import KanaConverter
+from karaoker.kana_convert import KanaConverter
 from karaoker.mapping import ScriptUnit, map_kana_events_to_script
 from karaoker.pipeline_types import (
     AlignmentResult,
@@ -163,11 +163,15 @@ class KanaStage:
 class CorpusStage:
     def run(self, ctx: PipelineContext) -> None:
         if ctx.audio is None or ctx.transcript is None:
-            raise ValueError("Audio and transcript stages must run before corpus stage.")
+            raise ValueError(
+                "Audio and transcript stages must run before corpus stage."
+            )
 
         corpus_dir = ctx.paths.alignment_dir / "corpus"
         corpus_dir.mkdir(parents=True, exist_ok=True)
-        for p in list(corpus_dir.glob("utt_*.wav")) + list(corpus_dir.glob("utt_*.lab")):
+        for p in list(corpus_dir.glob("utt_*.wav")) + list(
+            corpus_dir.glob("utt_*.lab")
+        ):
             p.unlink(missing_ok=True)
 
         items: list[CorpusItem] = []
@@ -224,7 +228,9 @@ class CorpusStage:
         if ctx.transcript.kind != "lrc":
             script_text = " ".join(script_parts).strip()
             if not script_text:
-                raise ValueError("whisper.cpp JSON 'transcription' contained no usable text to align.")
+                raise ValueError(
+                    "whisper.cpp JSON 'transcription' contained no usable text to align."
+                )
             if not items:
                 raise ValueError(
                     "whisper.cpp produced no usable kana segments to align. "
@@ -303,7 +309,9 @@ class AlignmentStage:
                 if not tg.exists():
                     continue
 
-                line_events = textgrid_to_kana_events(tg, offset_seconds=item.segment.start)
+                line_events = textgrid_to_kana_events(
+                    tg, offset_seconds=item.segment.start
+                )
                 for e in line_events:
                     e["line_i"] = idx
                     e["line_event_i"] = e.get("i")
@@ -360,7 +368,9 @@ class AlignmentStage:
                     if isinstance(e.get("script_unit_i"), int):
                         e["script_unit_i"] = int(e["script_unit_i"]) + unit_base
                     if isinstance(e.get("script_char_start"), int):
-                        e["script_char_start"] = int(e["script_char_start"]) + char_offset
+                        e["script_char_start"] = (
+                            int(e["script_char_start"]) + char_offset
+                        )
                     if isinstance(e.get("script_char_end"), int):
                         e["script_char_end"] = int(e["script_char_end"]) + char_offset
 

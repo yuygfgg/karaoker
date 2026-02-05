@@ -50,6 +50,9 @@ class PipelineConfig:
     mfa_acoustic_model: str
     kana_output: str
     lyrics_lrc: Path | None
+    asr_backend: str = "whispercpp"
+    kana_backend: str = "pykakasi"
+    gemini_model: str = "gemini-3-flash-preview"
 
 
 @dataclass

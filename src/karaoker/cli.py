@@ -46,6 +46,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional .lrc path. If provided, skip ASR and use these lyrics as transcript.",
     )
+    run.add_argument(
+        "--asr-backend",
+        choices=["whispercpp", "gemini"],
+        default="whispercpp",
+        help=(
+            "ASR backend to use when --lyrics-lrc is not provided (default: %(default)s). "
+            "Gemini requires GEMINI_API_KEY and `pip install -e \".[gemini]\"`."
+        ),
+    )
+    run.add_argument(
+        "--kana-backend",
+        choices=["pykakasi", "gemini"],
+        default="pykakasi",
+        help=(
+            "Kana conversion backend (default: %(default)s). "
+            "Gemini requires GEMINI_API_KEY and `pip install -e \".[gemini]\"`."
+        ),
+    )
+    run.add_argument(
+        "--gemini-model",
+        default="gemini-3-flash-preview",
+        help=(
+            "Gemini model name for gemini backends (default: %(default)s). "
+            "Used by both ASR and kana conversion."
+        ),
+    )
 
     # External tool entrypoints
     run.add_argument(
@@ -119,7 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--mfa-dict",
         default=None,
-        help="Path to MFA pronunciation dictionary OR an installed model name (default: japanese_mfa).",
+        help=(
+            "Path to MFA pronunciation dictionary OR an installed model name "
+            "(default: japanese_mfa)."
+        ),
     )
     run.add_argument(
         "--mfa-acoustic-model",
@@ -134,6 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="katakana",
         help="Kana output type (default: katakana).",
     )
+    
+    # TODO
     run.add_argument(
         "--keep-work",
         action="store_true",
@@ -220,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
             mfa_acoustic_model=args.mfa_acoustic_model,
             kana_output=args.kana_output,
             lyrics_lrc=lyrics_lrc,
+            asr_backend=args.asr_backend,
+            kana_backend=args.kana_backend,
+            gemini_model=args.gemini_model,
         )
         return 0
     if args.cmd == "convert-wav":
