@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -63,6 +64,13 @@ class Line:
     text: str
 
 
+@dataclass(frozen=True)
+class _Atom:
+    char_start: int
+    char_end: int
+    elastic: bool
+
+
 def _iter_script_units(data: dict[str, Any]) -> list[dict[str, Any]]:
     su = data.get("script_units")
     if isinstance(su, list):
@@ -84,8 +92,8 @@ def _events_by_segment_ref_kana_i(
     Build a lookup map for aligned per-kana events.
 
     karaoker enriches events with `ref_kana_i`. Depending on the pipeline version this index can be:
-      - global (monotonic across the whole track), or
-      - segment-local (restarts from 0 for each segment; includes `segment_i`).
+        - global (monotonic across the whole track), or
+        - segment-local (restarts from 0 for each segment; includes `segment_i`).
 
     We key by `(segment_i, ref_kana_i)` when `segment_i` is present, otherwise use `None`.
     """
@@ -145,6 +153,88 @@ def _ref_kana_tokens_by_segment(data: dict[str, Any]) -> dict[int | None, list[s
             out[seg_i] = rk.split()
 
     return out
+
+
+def _is_kana_char(ch: str) -> bool:
+    # Hiragana/Katakana (includes prolonged sound mark ー in the Katakana block).
+    o = ord(ch)
+    return (0x3040 <= o <= 0x309F) or (0x30A0 <= o <= 0x30FF)
+
+
+def _is_punct_or_symbol(ch: str) -> bool:
+    # Skip punctuation/symbols when distributing kana tokens to visible script glyphs.
+    # These usually have no corresponding MFA kana token.
+    cat = unicodedata.category(ch)
+    return cat.startswith("P") or cat.startswith("S")
+
+
+def _kana_token_spans(text: str, *, offset: int = 0) -> list[tuple[int, int]]:
+    """
+    Tokenize a kana-only string into "rough mora" spans (start/end indices in `text`).
+
+    Mirrors karaoker.kana.kana_tokens heuristics:
+        - small kana attach to previous
+        - sokuon (ッ/っ) attaches to previous (display-friendly)
+        - prolonged sound mark (ー) attaches to previous
+    """
+    if not text:
+        return []
+
+    small = set("ャュョァィゥェォゃゅょぁぃぅぇぉ")
+    attach_prev = set("ーッっ")
+
+    spans: list[list[int]] = []
+    for i, ch in enumerate(text):
+        if not spans:
+            spans.append([offset + i, offset + i + 1])
+            continue
+        if ch in small or ch in attach_prev:
+            spans[-1][1] = offset + i + 1
+        else:
+            spans.append([offset + i, offset + i + 1])
+
+    return [(s, e) for s, e in spans]
+
+
+def _visible_atoms(text: str) -> list[_Atom]:
+    """
+    Split visible script text into display atoms that can be assigned kana token timings.
+
+    - whitespace / punctuation / symbols are untimed (excluded)
+    - kana runs are tokenized with `_kana_token_spans` (1 atom per rough mora)
+    - ASCII alnum runs are grouped (so "LOVE" doesn't require 4 kana tokens)
+    - everything else is per-codepoint
+    """
+    atoms: list[_Atom] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+
+        if ch.isspace() or _is_punct_or_symbol(ch):
+            i += 1
+            continue
+
+        if _is_kana_char(ch):
+            j = i + 1
+            while j < len(text) and _is_kana_char(text[j]):
+                j += 1
+            for s, e in _kana_token_spans(text[i:j], offset=i):
+                atoms.append(_Atom(char_start=s, char_end=e, elastic=False))
+            i = j
+            continue
+
+        if ch.isascii() and ch.isalnum():
+            j = i + 1
+            while j < len(text) and text[j].isascii() and text[j].isalnum():
+                j += 1
+            atoms.append(_Atom(char_start=i, char_end=j, elastic=True))
+            i = j
+            continue
+
+        atoms.append(_Atom(char_start=i, char_end=i + 1, elastic=True))
+        i += 1
+
+    return atoms
 
 
 def _expand_script_unit_to_syllables(
@@ -218,6 +308,155 @@ def _expand_script_unit_to_syllables(
         pos += len(tok)
 
     if pos != len(text):
+        return None
+    return out
+
+
+def _expand_script_unit_to_animation_units(
+    u: dict[str, Any],
+    *,
+    script_text: str,
+    tok_events: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """
+    Expand a script unit into finer ASS-timed units using per-kana token timings.
+
+    Unlike `_expand_script_unit_to_syllables`, this works for mixed-script text (kanji+kana),
+    by distributing kana tokens over "visible atoms" derived from the script text.
+    """
+    if not tok_events:
+        return None
+
+    try:
+        char_start = int(u["char_start"])
+        char_end = int(u["char_end"])
+    except Exception:
+        return None
+    if char_end <= char_start:
+        return None
+
+    text = u.get("text")
+    if not isinstance(text, str) or (char_end - char_start) != len(text):
+        # Fall back to the canonical slice when we have it.
+        if 0 <= char_start <= len(script_text):
+            char_end = min(char_end, len(script_text))
+            text = script_text[char_start:char_end]
+        else:
+            return None
+
+    atoms = _visible_atoms(text)
+    if not atoms:
+        return None
+
+    if len(tok_events) < len(atoms):
+        return None
+
+    # DP segmentation: assign a contiguous slice of kana tokens to each visible atom.
+    # We heavily prefer matching visible kana atoms to their corresponding kana token(s),
+    # and otherwise distribute tokens roughly evenly across non-kana atoms.
+    try:
+        token_texts = [_hira_to_kata(str(e.get("text", ""))) for e in tok_events]
+        # Validate timing fields eagerly.
+        for e in tok_events:
+            float(e["start"])
+            float(e["end"])
+    except Exception:
+        return None
+
+    atom_texts = [text[a.char_start : a.char_end] for a in atoms]
+    atom_is_kana = [
+        bool(s) and all(_is_kana_char(ch) for ch in s) for s in atom_texts
+    ]
+
+    def _kana_variants(s: str) -> set[str]:
+        s2 = _hira_to_kata(s)
+        out = {s2}
+        # Common particle spelling vs pronunciation.
+        if s2 == "ヲ":
+            out.add("オ")
+        elif s2 == "ヘ":
+            out.add("エ")
+        elif s2 == "ハ":
+            out.add("ワ")
+        return out
+
+    kana_atom_variants = [
+        _kana_variants(s) if is_kana else set() for s, is_kana in zip(atom_texts, atom_is_kana)
+    ]
+
+    K = len(atoms)
+    N = len(tok_events)
+    INF = 10**12
+    dp: list[list[int]] = [[INF] * (N + 1) for _ in range(K + 1)]
+    back: list[list[int | None]] = [[None] * (N + 1) for _ in range(K + 1)]
+    dp[0][0] = 0
+
+    for i in range(1, K + 1):
+        # Atoms and tokens are 1-indexed in DP, but arrays are 0-indexed.
+        is_kana = atom_is_kana[i - 1]
+        variants = kana_atom_variants[i - 1]
+        # j = total tokens consumed so far.
+        j_min = i  # at least 1 token per atom
+        j_max = N - (K - i)  # leave at least 1 token for each remaining atom
+        for j in range(j_min, j_max + 1):
+            # Try all previous split points j0 (< j).
+            best_cost = INF
+            best_j0: int | None = None
+            for j0 in range(i - 1, j):
+                prev = dp[i - 1][j0]
+                if prev >= INF:
+                    continue
+
+                slice_text = "".join(token_texts[j0:j])
+                c = j - j0
+                if is_kana:
+                    # Prefer matching kana atoms to their token(s). Allow 1+ tokens when the
+                    # concatenation matches (e.g. キ + ャ == キャ).
+                    mismatch = 0 if slice_text in variants else 10_000
+                    # Small penalty for consuming multiple tokens, but allow it when needed.
+                    cost = prev + mismatch + (c - 1) * 10
+                else:
+                    # Even-ish distribution across non-kana atoms.
+                    cost = prev + (c - 1) * (c - 1)
+
+                if cost < best_cost:
+                    best_cost = cost
+                    best_j0 = j0
+
+            dp[i][j] = best_cost
+            back[i][j] = best_j0
+
+    if dp[K][N] >= INF or back[K][N] is None:
+        return None
+
+    # Reconstruct token counts per atom.
+    alloc: list[int] = [0] * K
+    j = N
+    for i in range(K, 0, -1):
+        j0 = back[i][j]
+        if j0 is None:
+            return None
+        alloc[i - 1] = j - j0
+        j = j0
+    if j != 0 or any(n <= 0 for n in alloc):
+        return None
+
+    out: list[dict[str, Any]] = []
+    idx = 0
+    for atom, n_tok in zip(atoms, alloc):
+        ev0 = tok_events[idx]
+        ev1 = tok_events[idx + n_tok - 1]
+        out.append(
+            {
+                "start": float(ev0["start"]),
+                "end": float(ev1["end"]),
+                "char_start": char_start + atom.char_start,
+                "char_end": char_start + atom.char_end,
+            }
+        )
+        idx += n_tok
+
+    if idx != len(tok_events):
         return None
     return out
 
@@ -441,8 +680,8 @@ def subtitles_json_to_ass(
         if script_text is None:
             script_text = ""
 
-        # Optional: use per-kana (syllable) timing to improve \k accuracy when the
-        # displayed script unit is kana and matches its reading.
+        # Optional: use per-kana timing (`events`) to create finer karaoke units within
+        # each script span (including mixed kanji+kana text).
         ref_kana_tokens_by_seg = _ref_kana_tokens_by_segment(data)
         events_by_seg = _events_by_segment_ref_kana_i(raw_events)
 
@@ -482,8 +721,8 @@ def subtitles_json_to_ass(
                 ce = max(cs, min(ce, len(script_text)))
                 full_text = script_text[cs:ce]
 
-                # Expand kana-only units to per-syllable timing where possible, then shift
-                # unit char offsets into the chunk-local text.
+                # Expand script units to finer "animation units" when per-kana timings
+                # are available, then shift unit char offsets into the chunk-local text.
                 expanded: list[dict[str, Any]] = []
                 for u in chunk:
                     seg_key: int | None = None
@@ -493,20 +732,40 @@ def subtitles_json_to_ass(
                         except Exception:
                             seg_key = None
 
-                    ref_kana_tokens = ref_kana_tokens_by_seg.get(seg_key) or ref_kana_tokens_by_seg.get(
-                        None, []
-                    )
+                    ref_kana_tokens = ref_kana_tokens_by_seg.get(seg_key) or ref_kana_tokens_by_seg.get(None, [])
                     by_ref = events_by_seg.get(seg_key) or events_by_seg.get(None, {})
 
-                    pieces = (
-                        _expand_script_unit_to_syllables(
-                            u,
-                            ref_kana_tokens=ref_kana_tokens,
-                            events_by_ref_kana_i=by_ref,
-                        )
-                        if ref_kana_tokens and by_ref
-                        else None
-                    )
+                    pieces: list[dict[str, Any]] | None = None
+                    if by_ref:
+                        # Exact mapping for pure kana units (when safe).
+                        if ref_kana_tokens:
+                            pieces = _expand_script_unit_to_syllables(
+                                u,
+                                ref_kana_tokens=ref_kana_tokens,
+                                events_by_ref_kana_i=by_ref,
+                            )
+                        # Heuristic mapping for mixed-script units.
+                        if pieces is None and u.get("ref_kana_start") is not None and u.get("ref_kana_end") is not None:
+                            try:
+                                rk_start = int(u["ref_kana_start"])
+                                rk_end = int(u["ref_kana_end"])
+                            except Exception:
+                                rk_start = rk_end = 0
+
+                            if rk_end > rk_start:
+                                tok_events: list[dict[str, Any]] = []
+                                for ref_i in range(rk_start, rk_end):
+                                    ev = by_ref.get(ref_i)
+                                    if ev is None:
+                                        tok_events = []
+                                        break
+                                    tok_events.append(ev)
+                                if tok_events:
+                                    pieces = _expand_script_unit_to_animation_units(
+                                        u,
+                                        script_text=script_text,
+                                        tok_events=tok_events,
+                                    )
                     if pieces is not None:
                         expanded.extend(pieces)
                     else:

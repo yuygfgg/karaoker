@@ -240,3 +240,40 @@ def test_asr_mode_uses_segment_local_ref_kana_indices():
     assert r"{\k5}せ{\k5}る" in ass
     # Gap from 0.10 -> 1.00 is 0.90s = 90cs.
     assert r"{\k90}" in ass
+
+
+def test_asr_mode_uses_per_kana_events_for_mixed_kanji_kana_units():
+    mod = _load_json_to_ass_module()
+
+    # Mixed script: kanji + kana. We should still be able to use per-kana token timings
+    # by distributing tokens over visible glyphs.
+    data = {
+        "version": 2,
+        "language": "ja",
+        "units": "kana",
+        "source": {"type": "asr"},
+        "script": {"text": "月を読む", "ref_kana": "ツ キ オ ヨ ム"},
+        "script_units": [
+            {
+                "i": 0,
+                "start": 0.0,
+                "end": 0.50,
+                "text": "月を読む",
+                "char_start": 0,
+                "char_end": 4,
+                "reading": "ツ キ オ ヨ ム",
+                "ref_kana_start": 0,
+                "ref_kana_end": 5,
+            }
+        ],
+        "events": [
+            {"i": 0, "start": 0.00, "end": 0.05, "text": "ツ", "tier": "words", "ref_kana_i": 0},
+            {"i": 1, "start": 0.05, "end": 0.10, "text": "キ", "tier": "words", "ref_kana_i": 1},
+            {"i": 2, "start": 0.10, "end": 0.20, "text": "オ", "tier": "words", "ref_kana_i": 2},
+            {"i": 3, "start": 0.20, "end": 0.30, "text": "ヨ", "tier": "words", "ref_kana_i": 3},
+            {"i": 4, "start": 0.30, "end": 0.50, "text": "ム", "tier": "words", "ref_kana_i": 4},
+        ],
+    }
+
+    ass = mod.subtitles_json_to_ass(data, gap_threshold_s=5.0, max_caption_s=20.0)
+    assert r"{\k10}月{\k10}を{\k10}読{\k20}む" in ass

@@ -277,6 +277,8 @@ def build_gemini_asr_kana_prompt(*, kana_output: KanaOutput) -> str:
 
 def _strip_markdown_fences(s: str) -> str:
     raw = s.strip()
+    if "\n" not in raw and "\\n" in raw:
+        raw = raw.replace("\\r\\n", "\n").replace("\\n", "\n")
     if not raw.startswith("```"):
         return raw
     first_nl = raw.find("\n")
