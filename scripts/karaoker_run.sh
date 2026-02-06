@@ -23,8 +23,8 @@ Usage:
 Options:
   --asr-backend <whispercpp|gemini>    Default: whispercpp. Ignored when --lrc is set.
   --kana-backend <mecab|gemini>        Default: mecab.
-  --gemini-model <name>               Default: gemini-3-flash-preview.
-                                      Gemini backends require `GEMINI_API_KEY` and `pip install -e ".[gemini]"`.
+  --gemini-model <name>                Default: gemini-3-flash-preview.
+                                       Gemini backends require `GEMINI_API_KEY` and `pip install -e ".[gemini]"`.
 
   --lrc <path>                 Use an .lrc file as lyrics (recommended). Skips ASR.
   --separate                   Enable vocal separation (python-audio-separator) (default).
@@ -34,6 +34,11 @@ Options:
   --kana-output <katakana|hiragana>   Default: katakana
   --mfa-acoustic-model <name|path>    Default: japanese_mfa
   --mfa-dict <name|path>              Default: (auto via G2P)
+  --mfa-f0 <none|constant|flatten>    Optional. Flatten pitch (F0) with WORLD/pyworld before MFA.
+                                      Default: none.
+  --mfa-f0-constant-hz <hz>           When --mfa-f0 constant. Default: 150
+  --mfa-f0-flatten-factor <0..1>      When --mfa-f0 flatten. Default: 0
+  --no-mfa-f0-preserve-unvoiced       When set, also forces unvoiced frames (F0=0) to the flattened value.
 
   --audio-separator-model <filename>  Default: model_bs_roformer_ep_317_sdr_12.9755.ckpt
   --dereverb-model <filename>         Default: dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt
@@ -55,6 +60,10 @@ DOWNLOAD_MODELS=0
 KANA_OUTPUT="katakana"
 MFA_ACOUSTIC_MODEL="japanese_mfa"
 MFA_DICT=""  # empty => auto-g2p dict
+MFA_F0="none"
+MFA_F0_CONSTANT_HZ="150"
+MFA_F0_FLATTEN_FACTOR="0.0"
+MFA_F0_PRESERVE_UNVOICED=1
 AUDIO_SEP_MODEL="model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 DEREVERB_MODEL="dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
 DEREVERB=1
@@ -76,6 +85,11 @@ while [[ $# -gt 0 ]]; do
     --kana-output) KANA_OUTPUT="${2:-}"; shift 2 ;;
     --mfa-acoustic-model) MFA_ACOUSTIC_MODEL="${2:-}"; shift 2 ;;
     --mfa-dict) MFA_DICT="${2:-}"; shift 2 ;;
+    --mfa-f0) MFA_F0="${2:-}"; shift 2 ;;
+    --mfa-f0-constant-hz) MFA_F0_CONSTANT_HZ="${2:-}"; shift 2 ;;
+    --mfa-f0-flatten-factor) MFA_F0_FLATTEN_FACTOR="${2:-}"; shift 2 ;;
+    --mfa-f0-preserve-unvoiced) MFA_F0_PRESERVE_UNVOICED=1; shift ;;
+    --no-mfa-f0-preserve-unvoiced) MFA_F0_PRESERVE_UNVOICED=0; shift ;;
     --audio-separator-model) AUDIO_SEP_MODEL="${2:-}"; shift 2 ;;
     --dereverb-model) DEREVERB_MODEL="${2:-}"; shift 2 ;;
     --no-dereverb) DEREVERB=0; shift ;;
@@ -240,6 +254,9 @@ cmd=(
   --mfa "${MFA}"
   --kana-output "${KANA_OUTPUT}"
   --mfa-acoustic-model "${MFA_ACOUSTIC_MODEL}"
+  --mfa-f0 "${MFA_F0}"
+  --mfa-f0-constant-hz "${MFA_F0_CONSTANT_HZ}"
+  --mfa-f0-flatten-factor "${MFA_F0_FLATTEN_FACTOR}"
 )
 
 if [[ -n "${LRC}" ]]; then
@@ -262,6 +279,10 @@ fi
 
 if [[ -n "${MFA_DICT}" ]]; then
   cmd+=( --mfa-dict "${MFA_DICT}" )
+fi
+
+if [[ "${MFA_F0_PRESERVE_UNVOICED}" -eq 0 ]]; then
+  cmd+=( --no-mfa-f0-preserve-unvoiced )
 fi
 
 if [[ "${SEPARATE}" -eq 1 ]]; then

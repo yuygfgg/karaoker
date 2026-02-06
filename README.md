@@ -35,6 +35,9 @@ conda activate ./.conda/env
 pip install -e ".[dev,textgrid]"
 ```
 
+Optional extras:
+- WORLD pitch flattening before MFA (`--mfa-f0 ...`): `pip install -e ".[world]"`
+
 If you prefer a one-shot bootstrap (conda + MFA + whisper.cpp + audio-separator), see:
 
 ```bash
@@ -78,6 +81,7 @@ karaoker run \
 Outputs:
 - `workdir/audio/vocals.wav` (separated vocals + de-reverb + Silero VAD gating, when `--audio-separator` is enabled)
 - `workdir/audio/vocals_dry.wav` (pre-VAD, de-reverbed 16k mono)
+- `workdir/audio/mfa_input.wav` (optional: WORLD/pyworld re-synthesis with flattened F0 for MFA alignment)
 - `workdir/asr/asr.json`
 - `workdir/transcript/kana_spaced.txt`
 - `workdir/alignment/textgrids/utt_XXXX.TextGrid` (one per LRC line or ASR segment)

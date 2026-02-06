@@ -16,7 +16,7 @@ from .stages import (
     TranscriptStage,
     WorkspaceStage,
 )
-from .types import PipelineConfig, PipelineContext, PipelinePaths
+from .types import MfaF0FlattenMode, PipelineConfig, PipelineContext, PipelinePaths
 
 __all__ = [
     # API
@@ -98,6 +98,10 @@ def run_pipeline(
     asr_backend: str = "whispercpp",
     kana_backend: str = "mecab",
     gemini_model: str = "gemini-3-flash-preview",
+    mfa_f0_mode: MfaF0FlattenMode = "none",
+    mfa_f0_constant_hz: float = 150.0,
+    mfa_f0_flatten_factor: float = 0.0,
+    mfa_f0_preserve_unvoiced: bool = True,
 ) -> None:
     """
     Generate per-kana timing events for a song: audio -> transcript -> MFA alignment -> JSON.
@@ -128,6 +132,10 @@ def run_pipeline(
         asr_backend=asr_backend,
         kana_backend=kana_backend,
         gemini_model=gemini_model,
+        mfa_f0_mode=mfa_f0_mode,
+        mfa_f0_constant_hz=mfa_f0_constant_hz,
+        mfa_f0_flatten_factor=mfa_f0_flatten_factor,
+        mfa_f0_preserve_unvoiced=mfa_f0_preserve_unvoiced,
     )
 
     pipeline = build_default_pipeline(config)

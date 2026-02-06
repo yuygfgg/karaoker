@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="whispercpp",
         help=(
             "ASR backend to use when --lyrics-lrc is not provided (default: %(default)s). "
-            "Gemini requires GEMINI_API_KEY and `pip install -e \".[gemini]\"`."
+            'Gemini requires GEMINI_API_KEY and `pip install -e ".[gemini]"`.'
         ),
     )
     run.add_argument(
@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="mecab",
         help=(
             "Kana conversion backend (default: %(default)s). "
-            "Gemini requires GEMINI_API_KEY and `pip install -e \".[gemini]\"`."
+            'Gemini requires GEMINI_API_KEY and `pip install -e ".[gemini]"`.'
         ),
     )
     run.add_argument(
@@ -155,6 +155,39 @@ def build_parser() -> argparse.ArgumentParser:
         default="japanese_mfa",
         help="MFA acoustic model path or installed model name (default: japanese_mfa).",
     )
+    run.add_argument(
+        "--mfa-f0",
+        choices=["none", "constant", "flatten"],
+        default="none",
+        help=(
+            "Optional: pre-process audio before MFA by flattening F0 (pitch) with WORLD/pyworld "
+            "(default: %(default)s)."
+        ),
+    )
+    run.add_argument(
+        "--mfa-f0-constant-hz",
+        type=float,
+        default=150.0,
+        help=(
+            "When --mfa-f0=constant: set voiced F0 to this fixed value in Hz "
+            "(default: %(default)s)."
+        ),
+    )
+    run.add_argument(
+        "--mfa-f0-flatten-factor",
+        type=float,
+        default=0.0,
+        help=(
+            "When --mfa-f0=flatten: variance compression factor in [0,1] applied in log-Hz space "
+            "(0=fully flat at mean, 1=no change) (default: %(default)s)."
+        ),
+    )
+    run.add_argument(
+        "--mfa-f0-preserve-unvoiced",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preserve unvoiced frames (F0=0) when flattening (default: enabled).",
+    )
 
     # Tuning
     run.add_argument(
@@ -163,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="katakana",
         help="Kana output type (default: katakana).",
     )
-    
+
     # TODO
     run.add_argument(
         "--keep-work",
@@ -254,6 +287,10 @@ def main(argv: list[str] | None = None) -> int:
             asr_backend=args.asr_backend,
             kana_backend=args.kana_backend,
             gemini_model=args.gemini_model,
+            mfa_f0_mode=args.mfa_f0,
+            mfa_f0_constant_hz=args.mfa_f0_constant_hz,
+            mfa_f0_flatten_factor=args.mfa_f0_flatten_factor,
+            mfa_f0_preserve_unvoiced=args.mfa_f0_preserve_unvoiced,
         )
         return 0
     if args.cmd == "convert-wav":

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from karaoker.mapping import ScriptUnit
 
+MfaF0FlattenMode = Literal["none", "constant", "flatten"]
+
 
 @dataclass(frozen=True)
 class PipelinePaths:
@@ -53,12 +55,17 @@ class PipelineConfig:
     asr_backend: str = "whispercpp"
     kana_backend: str = "mecab"
     gemini_model: str = "gemini-3-flash-preview"
+    mfa_f0_mode: MfaF0FlattenMode = "none"
+    mfa_f0_constant_hz: float = 150.0
+    mfa_f0_flatten_factor: float = 0.0
+    mfa_f0_preserve_unvoiced: bool = True
 
 
 @dataclass
 class AudioAssets:
     song_wav: Path
     asr_input: Path
+    mfa_input: Path
     vocals_wav: Path | None
     vad_speech_segments_ms: list[tuple[int, int]] | None
 

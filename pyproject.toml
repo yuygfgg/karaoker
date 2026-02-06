@@ -22,6 +22,9 @@ gemini = [
 textgrid = [
   "praat-textgrids>=1.4.0",
 ]
+world = [
+  "pyworld>=0.3.4",
+]
 dev = [
   "pytest>=7.0",
   "ruff>=0.5",

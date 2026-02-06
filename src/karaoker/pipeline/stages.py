@@ -115,9 +115,29 @@ class AudioStage:
 
             asr_input = vocals_wav
 
+        mfa_input = asr_input
+        if config.mfa_f0_mode != "none":
+            from karaoker.f0_flatten import WorldF0FlattenSettings, world_flatten_f0_wav
+
+            mfa_input = paths.audio_dir / "mfa_input.wav"
+            report_json = paths.audio_dir / "mfa_input.world.json"
+            settings = WorldF0FlattenSettings(
+                mode="constant" if config.mfa_f0_mode == "constant" else "flatten",
+                constant_hz=config.mfa_f0_constant_hz,
+                flatten_factor=config.mfa_f0_flatten_factor,
+                preserve_unvoiced=config.mfa_f0_preserve_unvoiced,
+            )
+            world_flatten_f0_wav(
+                input_wav=asr_input,
+                output_wav=mfa_input,
+                settings=settings,
+                output_report_json=report_json,
+            )
+
         ctx.audio = AudioAssets(
             song_wav=song_wav,
             asr_input=asr_input,
+            mfa_input=mfa_input,
             vocals_wav=vocals_wav,
             vad_speech_segments_ms=vad_speech_segments_ms,
         )
@@ -196,7 +216,7 @@ class CorpusStage:
 
             cut_wav_segment(
                 ffmpeg=ctx.config.ffmpeg,
-                input_wav=ctx.audio.asr_input,
+                input_wav=ctx.audio.mfa_input,
                 start_seconds=start_s,
                 end_seconds=end_s,
                 output_wav=out_wav,
@@ -224,7 +244,9 @@ class CorpusStage:
         if ctx.transcript.kind != "lrc":
             script_text = " ".join(script_parts).strip()
             if not script_text:
-                raise ValueError("whisper.cpp JSON 'transcription' contained no usable text to align.")
+                raise ValueError(
+                    "whisper.cpp JSON 'transcription' contained no usable text to align."
+                )
             if not items:
                 raise ValueError(
                     "whisper.cpp produced no usable kana segments to align. "
