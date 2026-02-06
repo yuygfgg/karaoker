@@ -51,7 +51,7 @@ class PipelineConfig:
     kana_output: str
     lyrics_lrc: Path | None
     asr_backend: str = "whispercpp"
-    kana_backend: str = "pykakasi"
+    kana_backend: str = "mecab"
     gemini_model: str = "gemini-3-flash-preview"
 
 

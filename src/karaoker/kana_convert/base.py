@@ -27,10 +27,10 @@ def build_kana_converter(name: str, /, **kwargs) -> KanaConverter:
     Imports backends lazily to avoid import cycles.
     """
     key = name.strip().lower()
-    if key in {"pykakasi", "kakasi"}:
-        from karaoker.kana_convert.pykakasi import PykakasiKanaConverter
+    if key in {"mecab", "unidic", "default"}:
+        from karaoker.kana_convert.mecab import MecabKanaConverter
 
-        return PykakasiKanaConverter()
+        return MecabKanaConverter()
     if key in {"gemini"}:
         from karaoker.kana_convert.gemini import GeminiKanaConverter
 

@@ -22,7 +22,7 @@ Usage:
 
 Options:
   --asr-backend <whispercpp|gemini>    Default: whispercpp. Ignored when --lrc is set.
-  --kana-backend <pykakasi|gemini>     Default: pykakasi.
+  --kana-backend <mecab|gemini>        Default: mecab.
   --gemini-model <name>               Default: gemini-3-flash-preview.
                                       Gemini backends require `GEMINI_API_KEY` and `pip install -e ".[gemini]"`.
 
@@ -48,7 +48,7 @@ INPUT=""
 LRC=""
 WORKDIR=""
 ASR_BACKEND="whispercpp"
-KANA_BACKEND="pykakasi"
+KANA_BACKEND="mecab"
 GEMINI_MODEL="gemini-3-flash-preview"
 SEPARATE=1
 DOWNLOAD_MODELS=0

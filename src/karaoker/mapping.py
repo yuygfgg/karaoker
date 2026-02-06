@@ -4,37 +4,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pykakasi import kakasi
-
 from karaoker.kana import kana_tokens
+from karaoker.mecab_kana import mecab_tokenize
 
 
 _RE_JP_SPACE = re.compile(r"\s+")
-_RE_NON_KANA = re.compile(
-    r"[^\u3040-\u30ff\u30fc ]+"
-)  # keep kana + prolonged mark + space
-
-
-def _kakasi_instance(*, output: str):
-    kks = kakasi()
-    # Kanji -> kana
-    kks.setMode("J", "K" if output == "katakana" else "H")
-    # Hiragana -> kana
-    kks.setMode("H", "K" if output == "katakana" else "H")
-    # Katakana -> kana
-    kks.setMode("K", "K" if output == "katakana" else "H")
-    # Ascii -> keep
-    kks.setMode("a", "a")
-    kks.setMode("E", "a")
-    return kks
-
-
-def _clean_kana(s: str) -> str:
-    # Match `karaoker.kana.to_spaced_kana` cleaning rules.
-    s = s.replace("\u3000", " ")
-    s = _RE_NON_KANA.sub(" ", s)
-    s = _RE_JP_SPACE.sub(" ", s).strip()
-    return s
 
 
 def _kata_to_hira(s: str) -> str:
@@ -57,7 +31,7 @@ def normalize_kana_token(token: str) -> str:
 @dataclass(frozen=True)
 class ScriptUnit:
     """
-    One contiguous span of the original script text (typically a kakasi token).
+    One contiguous span of the original script text (typically a MeCab token).
 
     `ref_kana_*` ranges are indices into the flattened reference kana token list.
     """
@@ -82,30 +56,17 @@ def script_to_kana_units(
       - ref_kana_tokens: flattened mora-ish tokens (the same kind of tokens used for MFA transcripts)
       - units: per-script-span mapping into ref_kana_tokens
     """
-    kks = _kakasi_instance(output=output)
-    pieces = kks.convert(text)
-
     units: list[ScriptUnit] = []
     ref_tokens: list[str] = []
     ref_i = 0
-    pos = 0
-    for piece in pieces:
-        orig = str(piece.get("orig", ""))
-        start = pos
-        end = pos + len(orig)
-        # Safety: if kakasi tokenization doesn't exactly cover the original text, resync.
-        if text[start:end] != orig:
-            found = text.find(orig, pos)
-            if found != -1:
-                start = found
-                end = found + len(orig)
-        pos = end
-
-        reading_raw = piece.get("kana") if output == "katakana" else piece.get("hira")
-        reading = _clean_kana(str(reading_raw or ""))
+    for tok in mecab_tokenize(text, output=output):  # type: ignore[arg-type]
+        orig = tok.surface
+        start = tok.char_start
+        end = tok.char_end
+        reading = tok.reading
 
         toks: list[str] = []
-        for chunk in reading.split(" "):
+        for chunk in _RE_JP_SPACE.split(reading):
             if not chunk:
                 continue
             toks.extend(kana_tokens(chunk))

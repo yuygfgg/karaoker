@@ -7,5 +7,5 @@ def test_kana_tokens_attach_small_kana():
 
 def test_to_spaced_kana_basic():
     out = to_spaced_kana("今日はキャットです", output="katakana")
-    # Don't assert full string (pykakasi may vary), just that it becomes spaced tokens.
+    # Don't assert full string (tokenization/reading may vary), just that it becomes spaced tokens.
     assert " " in out

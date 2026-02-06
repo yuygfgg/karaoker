@@ -10,7 +10,7 @@ class GeminiKanaConverter(KanaConverter):
     Gemini-powered kana converter.
 
     This is mainly useful when you already have the lyrics text (e.g. LRC) but want a
-    model-based reading instead of pykakasi.
+    model-based reading instead of the local MeCab backend.
     """
 
     def __init__(

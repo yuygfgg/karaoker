@@ -96,7 +96,7 @@ def run_pipeline(
     kana_output: str,
     lyrics_lrc: Path | None = None,
     asr_backend: str = "whispercpp",
-    kana_backend: str = "pykakasi",
+    kana_backend: str = "mecab",
     gemini_model: str = "gemini-3-flash-preview",
 ) -> None:
     """
@@ -132,4 +132,3 @@ def run_pipeline(
 
     pipeline = build_default_pipeline(config)
     pipeline.run(config)
-

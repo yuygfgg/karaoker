@@ -57,8 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--kana-backend",
-        choices=["pykakasi", "gemini"],
-        default="pykakasi",
+        choices=["mecab", "gemini"],
+        default="mecab",
         help=(
             "Kana conversion backend (default: %(default)s). "
             "Gemini requires GEMINI_API_KEY and `pip install -e \".[gemini]\"`."
@@ -196,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     asr.add_argument("--whisper-cpp", default="whisper-cpp")
     asr.add_argument("--whisper-model", required=True)
 
-    kana = sub.add_parser("kana", help="Convert text to spaced kana (pykakasi).")
+    kana = sub.add_parser("kana", help="Convert text to spaced kana (MeCab).")
     kana.add_argument("--text", required=True, help="Input text (Japanese).")
     kana.add_argument(
         "--output", required=True, help="Output .txt path for spaced kana."

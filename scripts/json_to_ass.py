@@ -127,6 +127,45 @@ def _events_by_segment_ref_kana_i(
     return out
 
 
+def _events_by_line_ref_kana_i(
+    events: list[dict[str, Any]],
+) -> dict[int | None, dict[int, dict[str, Any]]]:
+    """
+    Build a lookup map for aligned per-kana events in LRC mode.
+
+    In LRC mode, `ref_kana_i` is typically line-local (restarts from 0 for each line),
+    so we key by `(line_i, ref_kana_i)` when `line_i` is present, otherwise use `None`.
+    """
+    out: dict[int | None, dict[int, dict[str, Any]]] = {}
+    for e in events:
+        rk = e.get("ref_kana_i")
+        if rk is None:
+            continue
+        try:
+            rk_i = int(rk)
+        except Exception:
+            continue
+
+        line_key: int | None = None
+        if e.get("line_i") is not None:
+            try:
+                line_key = int(e["line_i"])
+            except Exception:
+                line_key = None
+
+        # Validate timing early so callers can assume start/end are present and numeric.
+        try:
+            float(e["start"])
+            float(e["end"])
+        except Exception:
+            continue
+
+        bucket = out.setdefault(line_key, {})
+        # Prefer first occurrence if duplicates exist.
+        bucket.setdefault(rk_i, e)
+    return out
+
+
 def _ref_kana_tokens_by_segment(data: dict[str, Any]) -> dict[int | None, list[str]]:
     """
     Return ref_kana tokens keyed by segment_i when available, otherwise by None.
@@ -155,10 +194,52 @@ def _ref_kana_tokens_by_segment(data: dict[str, Any]) -> dict[int | None, list[s
     return out
 
 
+def _ref_kana_tokens_by_line(data: dict[str, Any]) -> dict[int, list[str]]:
+    """
+    Return ref_kana tokens keyed by line index (LRC mode).
+    """
+    out: dict[int, list[str]] = {}
+    lines = data.get("lines")
+    if not isinstance(lines, list):
+        return out
+
+    for idx, ln in enumerate(lines):
+        if not isinstance(ln, dict):
+            continue
+        rk = ln.get("ref_kana")
+        if not isinstance(rk, str) or not rk:
+            continue
+
+        line_i_raw = ln.get("i", idx)
+        try:
+            line_i = int(line_i_raw)
+        except Exception:
+            line_i = idx
+        out[line_i] = rk.split()
+
+    return out
+
+
 def _is_kana_char(ch: str) -> bool:
     # Hiragana/Katakana (includes prolonged sound mark ー in the Katakana block).
     o = ord(ch)
     return (0x3040 <= o <= 0x309F) or (0x30A0 <= o <= 0x30FF)
+
+
+def _is_cjk_ideograph(ch: str) -> bool:
+    # CJK Unified Ideographs + extensions + compatibility blocks.
+    o = ord(ch)
+    return (
+        (0x3400 <= o <= 0x4DBF)  # Ext A
+        or (0x4E00 <= o <= 0x9FFF)  # Unified
+        or (0xF900 <= o <= 0xFAFF)  # Compatibility
+        or (0x20000 <= o <= 0x2A6DF)  # Ext B
+        or (0x2A700 <= o <= 0x2B73F)  # Ext C
+        or (0x2B740 <= o <= 0x2B81F)  # Ext D
+        or (0x2B820 <= o <= 0x2CEAF)  # Ext E
+        or (0x2CEB0 <= o <= 0x2EBEF)  # Ext F
+        or (0x2F800 <= o <= 0x2FA1F)  # Compatibility Supplement
+    )
 
 
 def _is_punct_or_symbol(ch: str) -> bool:
@@ -226,6 +307,14 @@ def _visible_atoms(text: str) -> list[_Atom]:
         if ch.isascii() and ch.isalnum():
             j = i + 1
             while j < len(text) and text[j].isascii() and text[j].isalnum():
+                j += 1
+            atoms.append(_Atom(char_start=i, char_end=j, elastic=True))
+            i = j
+            continue
+
+        if _is_cjk_ideograph(ch):
+            j = i + 1
+            while j < len(text) and _is_cjk_ideograph(text[j]):
                 j += 1
             atoms.append(_Atom(char_start=i, char_end=j, elastic=True))
             i = j
@@ -367,6 +456,9 @@ def _expand_script_unit_to_animation_units(
     atom_is_kana = [
         bool(s) and all(_is_kana_char(ch) for ch in s) for s in atom_texts
     ]
+    atom_is_cjk = [
+        bool(s) and all(_is_cjk_ideograph(ch) for ch in s) for s in atom_texts
+    ]
 
     def _kana_variants(s: str) -> set[str]:
         s2 = _hira_to_kata(s)
@@ -418,6 +510,14 @@ def _expand_script_unit_to_animation_units(
                 else:
                     # Even-ish distribution across non-kana atoms.
                     cost = prev + (c - 1) * (c - 1)
+                    # CJK ideographs (kanji/hanzi) can have multi-mora readings, but letting a
+                    # single visible atom absorb an arbitrary number of tokens often produces
+                    # very uneven highlights. Add a soft penalty when a CJK atom consumes
+                    # "too many" tokens relative to its glyph length.
+                    if atom_is_cjk[i - 1]:
+                        glyphs = max(1, len(atom_texts[i - 1]))
+                        over = max(0, c - 4 * glyphs)
+                        cost += over * over * 50
 
                 if cost < best_cost:
                     best_cost = cost
@@ -658,10 +758,74 @@ def subtitles_json_to_ass(
 
     if lines:
         # LRC mode: one dialogue per line, timed by LRC start/end, karaoke by per-line script_units.
+        ref_kana_tokens_by_line = _ref_kana_tokens_by_line(data)
+        events_by_line = _events_by_line_ref_kana_i(raw_events)
+
+        units_by_line: dict[int, list[dict[str, Any]]] = {}
+        for u in raw_units:
+            li = u.get("line_i")
+            if li is None:
+                continue
+            try:
+                line_i = int(li)
+            except Exception:
+                continue
+            units_by_line.setdefault(line_i, []).append(u)
+
         for ln in lines:
-            ln_units = [u for u in raw_units if int(u.get("line_i", -1)) == ln.i]
             full_text = ln.text
-            timed = _timed_units_for_text(full_text=full_text, raw_units=ln_units)
+            ln_units = units_by_line.get(ln.i, [])
+
+            # Optional: use per-kana timing (`events`) to create finer karaoke units within
+            # each script span (including mixed kanji+kana text), just like ASR mode.
+            by_ref = events_by_line.get(ln.i) or events_by_line.get(None, {})
+            ref_kana_tokens = ref_kana_tokens_by_line.get(ln.i, [])
+
+            expanded: list[dict[str, Any]] = []
+            for u in ln_units:
+                pieces: list[dict[str, Any]] | None = None
+                if by_ref:
+                    # Exact mapping for pure kana units (when safe).
+                    if ref_kana_tokens:
+                        pieces = _expand_script_unit_to_syllables(
+                            u,
+                            ref_kana_tokens=ref_kana_tokens,
+                            events_by_ref_kana_i=by_ref,
+                        )
+
+                    # Heuristic mapping for mixed-script units.
+                    if (
+                        pieces is None
+                        and u.get("ref_kana_start") is not None
+                        and u.get("ref_kana_end") is not None
+                    ):
+                        try:
+                            rk_start = int(u["ref_kana_start"])
+                            rk_end = int(u["ref_kana_end"])
+                        except Exception:
+                            rk_start = rk_end = 0
+
+                        if rk_end > rk_start:
+                            tok_events: list[dict[str, Any]] = []
+                            for ref_i in range(rk_start, rk_end):
+                                ev = by_ref.get(ref_i)
+                                if ev is None:
+                                    tok_events = []
+                                    break
+                                tok_events.append(ev)
+                            if tok_events:
+                                pieces = _expand_script_unit_to_animation_units(
+                                    u,
+                                    script_text=full_text,
+                                    tok_events=tok_events,
+                                )
+
+                if pieces is not None:
+                    expanded.extend(pieces)
+                else:
+                    expanded.append(u)
+
+            timed = _timed_units_for_text(full_text=full_text, raw_units=expanded)
 
             start = max(0.0, float(ln.start) - float(lead_in_s))
             end = max(start + 0.01, float(ln.end) + float(tail_out_s))

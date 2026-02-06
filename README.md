@@ -7,7 +7,8 @@ It integrates with:
 1. `python-audio-separator` to extract vocals from a song (de-instrumentalize) + de-reverb.
 2. Silero VAD to hard-zero non-speech regions (silence becomes exactly 0) to reduce alignment noise.
 3. `whisper.cpp` for offline ASR.
-4. `pykakasi` to convert recognized text to pure kana and insert spaces between kana tokens.
+4. MeCab (`mecab-python3` + `unidic-lite`) to convert recognized text to pure kana and insert spaces between
+   kana tokens.
 5. Montreal Forced Aligner (MFA) to force-align the spaced kana transcript to audio and produce a Praat
    `.TextGrid`.
 6. TextGrid parsing to generate the final JSON subtitle events.
