@@ -284,6 +284,7 @@ def _visible_atoms(text: str) -> list[_Atom]:
     - whitespace / punctuation / symbols are untimed (excluded)
     - kana runs are tokenized with `_kana_token_spans` (1 atom per rough mora)
     - ASCII alnum runs are grouped (so "LOVE" doesn't require 4 kana tokens)
+    - CJK ideographs are split per-codepoint (so multi-kanji words can animate)
     - everything else is per-codepoint
     """
     atoms: list[_Atom] = []
@@ -313,10 +314,13 @@ def _visible_atoms(text: str) -> list[_Atom]:
             continue
 
         if _is_cjk_ideograph(ch):
+            # Split consecutive kanji/hanzi into per-glyph atoms so we can distribute
+            # per-kana timings across the displayed word ("可哀想" -> "可" "哀" "想").
             j = i + 1
             while j < len(text) and _is_cjk_ideograph(text[j]):
                 j += 1
-            atoms.append(_Atom(char_start=i, char_end=j, elastic=True))
+            for k in range(i, j):
+                atoms.append(_Atom(char_start=k, char_end=k + 1, elastic=True))
             i = j
             continue
 
@@ -699,6 +703,112 @@ def _chunk_script_units(
     return out
 
 
+def _ref_kana_range(u: dict[str, Any]) -> tuple[int, int] | None:
+    if u.get("ref_kana_start") is None or u.get("ref_kana_end") is None:
+        return None
+    try:
+        rk_start = int(u["ref_kana_start"])
+        rk_end = int(u["ref_kana_end"])
+    except Exception:
+        return None
+    if rk_end <= rk_start:
+        return None
+    return rk_start, rk_end
+
+
+def _tok_events_for_ref_range(
+    events_by_ref_kana_i: dict[int, dict[str, Any]],
+    *,
+    rk_start: int,
+    rk_end: int,
+) -> list[dict[str, Any]] | None:
+    tok_events: list[dict[str, Any]] = []
+    for ref_i in range(rk_start, rk_end):
+        ev = events_by_ref_kana_i.get(ref_i)
+        if ev is None:
+            return None
+        tok_events.append(ev)
+    return tok_events
+
+
+def _expand_unit_with_kana_events(
+    u: dict[str, Any],
+    *,
+    script_text: str,
+    ref_kana_tokens: list[str],
+    events_by_ref_kana_i: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Expand a coarse script unit into finer timed units using per-kana timings, when available.
+
+    This is shared by both LRC mode (line-local indices) and ASR mode (segment/global indices).
+    """
+    if not events_by_ref_kana_i:
+        return [u]
+
+    pieces: list[dict[str, Any]] | None = None
+
+    # Exact mapping for pure kana units (when safe).
+    if ref_kana_tokens:
+        pieces = _expand_script_unit_to_syllables(
+            u,
+            ref_kana_tokens=ref_kana_tokens,
+            events_by_ref_kana_i=events_by_ref_kana_i,
+        )
+
+    # Heuristic mapping for mixed-script units (kanji+kana etc).
+    if pieces is None:
+        rk = _ref_kana_range(u)
+        if rk is not None:
+            rk_start, rk_end = rk
+            tok_events = _tok_events_for_ref_range(
+                events_by_ref_kana_i, rk_start=rk_start, rk_end=rk_end
+            )
+            if tok_events:
+                pieces = _expand_script_unit_to_animation_units(
+                    u,
+                    script_text=script_text,
+                    tok_events=tok_events,
+                )
+
+    return pieces if pieces is not None else [u]
+
+
+def _shift_units_char_offsets(
+    units: list[dict[str, Any]],
+    *,
+    delta: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for u in units:
+        u2 = dict(u)
+        try:
+            u2["char_start"] = int(u["char_start"]) + delta
+            u2["char_end"] = int(u["char_end"]) + delta
+        except Exception:
+            # Keep the original unit unchanged if offsets are missing/malformed.
+            pass
+        out.append(u2)
+    return out
+
+
+def _dialogue_line(
+    *,
+    full_text: str,
+    raw_units: list[dict[str, Any]],
+    start: float,
+    end: float,
+) -> str:
+    timed = _timed_units_for_text(full_text=full_text, raw_units=raw_units)
+    text = _render_karaoke_text(full_text=full_text, units=timed, line_start=start)
+    return (
+        "Dialogue: 0,"
+        f"{_format_ass_time(start)},{_format_ass_time(end)},"
+        "Default,,0,0,0,,"
+        f"{text}"
+    )
+
+
 def subtitles_json_to_ass(
     data: dict[str, Any],
     *,
@@ -783,61 +893,19 @@ def subtitles_json_to_ass(
 
             expanded: list[dict[str, Any]] = []
             for u in ln_units:
-                pieces: list[dict[str, Any]] | None = None
-                if by_ref:
-                    # Exact mapping for pure kana units (when safe).
-                    if ref_kana_tokens:
-                        pieces = _expand_script_unit_to_syllables(
-                            u,
-                            ref_kana_tokens=ref_kana_tokens,
-                            events_by_ref_kana_i=by_ref,
-                        )
-
-                    # Heuristic mapping for mixed-script units.
-                    if (
-                        pieces is None
-                        and u.get("ref_kana_start") is not None
-                        and u.get("ref_kana_end") is not None
-                    ):
-                        try:
-                            rk_start = int(u["ref_kana_start"])
-                            rk_end = int(u["ref_kana_end"])
-                        except Exception:
-                            rk_start = rk_end = 0
-
-                        if rk_end > rk_start:
-                            tok_events: list[dict[str, Any]] = []
-                            for ref_i in range(rk_start, rk_end):
-                                ev = by_ref.get(ref_i)
-                                if ev is None:
-                                    tok_events = []
-                                    break
-                                tok_events.append(ev)
-                            if tok_events:
-                                pieces = _expand_script_unit_to_animation_units(
-                                    u,
-                                    script_text=full_text,
-                                    tok_events=tok_events,
-                                )
-
-                if pieces is not None:
-                    expanded.extend(pieces)
-                else:
-                    expanded.append(u)
-
-            timed = _timed_units_for_text(full_text=full_text, raw_units=expanded)
+                expanded.extend(
+                    _expand_unit_with_kana_events(
+                        u,
+                        script_text=full_text,
+                        ref_kana_tokens=ref_kana_tokens,
+                        events_by_ref_kana_i=by_ref,
+                    )
+                )
 
             start = max(0.0, float(ln.start) - float(lead_in_s))
             end = max(start + 0.01, float(ln.end) + float(tail_out_s))
-            text = _render_karaoke_text(
-                full_text=full_text, units=timed, line_start=start
-            )
-
             events.append(
-                "Dialogue: 0,"
-                f"{_format_ass_time(start)},{_format_ass_time(end)},"
-                "Default,,0,0,0,,"
-                f"{text}"
+                _dialogue_line(full_text=full_text, raw_units=expanded, start=start, end=end)
             )
     else:
         # ASR mode: chunk script_units by pause/duration.
@@ -898,64 +966,23 @@ def subtitles_json_to_ass(
 
                     ref_kana_tokens = ref_kana_tokens_by_seg.get(seg_key) or ref_kana_tokens_by_seg.get(None, [])
                     by_ref = events_by_seg.get(seg_key) or events_by_seg.get(None, {})
+                    expanded.extend(
+                        _expand_unit_with_kana_events(
+                            u,
+                            script_text=script_text,
+                            ref_kana_tokens=ref_kana_tokens,
+                            events_by_ref_kana_i=by_ref,
+                        )
+                    )
 
-                    pieces: list[dict[str, Any]] | None = None
-                    if by_ref:
-                        # Exact mapping for pure kana units (when safe).
-                        if ref_kana_tokens:
-                            pieces = _expand_script_unit_to_syllables(
-                                u,
-                                ref_kana_tokens=ref_kana_tokens,
-                                events_by_ref_kana_i=by_ref,
-                            )
-                        # Heuristic mapping for mixed-script units.
-                        if pieces is None and u.get("ref_kana_start") is not None and u.get("ref_kana_end") is not None:
-                            try:
-                                rk_start = int(u["ref_kana_start"])
-                                rk_end = int(u["ref_kana_end"])
-                            except Exception:
-                                rk_start = rk_end = 0
-
-                            if rk_end > rk_start:
-                                tok_events: list[dict[str, Any]] = []
-                                for ref_i in range(rk_start, rk_end):
-                                    ev = by_ref.get(ref_i)
-                                    if ev is None:
-                                        tok_events = []
-                                        break
-                                    tok_events.append(ev)
-                                if tok_events:
-                                    pieces = _expand_script_unit_to_animation_units(
-                                        u,
-                                        script_text=script_text,
-                                        tok_events=tok_events,
-                                    )
-                    if pieces is not None:
-                        expanded.extend(pieces)
-                    else:
-                        expanded.append(u)
-
-                shifted: list[dict[str, Any]] = []
-                for u in expanded:
-                    u2 = dict(u)
-                    u2["char_start"] = int(u["char_start"]) - cs
-                    u2["char_end"] = int(u["char_end"]) - cs
-                    shifted.append(u2)
-                timed = _timed_units_for_text(full_text=full_text, raw_units=shifted)
+                shifted = _shift_units_char_offsets(expanded, delta=-cs)
 
                 start_u = float(chunk[0]["start"])
                 end_u = max(float(u["end"]) for u in chunk)
                 start = max(0.0, start_u - float(lead_in_s))
                 end = max(start + 0.01, end_u + float(tail_out_s))
-                text = _render_karaoke_text(
-                    full_text=full_text, units=timed, line_start=start
-                )
-
                 events.append(
-                    "Dialogue: 0,"
-                    f"{_format_ass_time(start)},{_format_ass_time(end)},"
-                    "Default,,0,0,0,,"
-                    f"{text}"
+                    _dialogue_line(full_text=full_text, raw_units=shifted, start=start, end=end)
                 )
 
     return header + "\n" + "\n".join(events) + ("\n" if events else "\n")

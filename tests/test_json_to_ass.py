@@ -363,3 +363,40 @@ def test_lrc_mode_uses_per_kana_events_for_mixed_kanji_kana_units():
 
     ass = mod.subtitles_json_to_ass(data)
     assert r"{\k10}月{\k10}を{\k10}読{\k20}む" in ass
+
+
+def test_splits_multi_kanji_words_into_per_char_atoms_when_per_kana_events_exist():
+    mod = _load_json_to_ass_module()
+
+    # When a script unit is a multi-kanji word, we should distribute per-kana token timings
+    # across the displayed glyphs instead of highlighting the whole word at once.
+    data = {
+        "version": 2,
+        "language": "ja",
+        "units": "kana",
+        "source": {"type": "asr"},
+        "script": {"text": "可哀想", "ref_kana": "カ ワ イ ソ ウ"},
+        "script_units": [
+            {
+                "i": 0,
+                "start": 0.0,
+                "end": 0.50,
+                "text": "可哀想",
+                "char_start": 0,
+                "char_end": 3,
+                "reading": "カワイソウ",
+                "ref_kana_start": 0,
+                "ref_kana_end": 5,
+            }
+        ],
+        "events": [
+            {"i": 0, "start": 0.00, "end": 0.10, "text": "カ", "tier": "words", "ref_kana_i": 0},
+            {"i": 1, "start": 0.10, "end": 0.20, "text": "ワ", "tier": "words", "ref_kana_i": 1},
+            {"i": 2, "start": 0.20, "end": 0.30, "text": "イ", "tier": "words", "ref_kana_i": 2},
+            {"i": 3, "start": 0.30, "end": 0.40, "text": "ソ", "tier": "words", "ref_kana_i": 3},
+            {"i": 4, "start": 0.40, "end": 0.50, "text": "ウ", "tier": "words", "ref_kana_i": 4},
+        ],
+    }
+
+    ass = mod.subtitles_json_to_ass(data, gap_threshold_s=5.0, max_caption_s=20.0)
+    assert re.search(r"\{\\k\d+\}可\{\\k\d+\}哀\{\\k\d+\}想", ass)
