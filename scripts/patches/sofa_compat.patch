@@ -1,0 +1,84 @@
+diff --git a/export_onnx.py b/export_onnx.py
+index d2a2cb4..f839e63 100644
+--- a/export_onnx.py
++++ b/export_onnx.py
+@@ -150,7 +150,12 @@ def export(ckpt_path, onnx_path):
+     assert not os.path.exists(onnx_path), f"Error: The file '{onnx_path}' already exists."
+     assert not output_config.exists(), f"Error: The file '{output_config}' already exists."
+ 
+-    model = LitForcedAlignmentOnnx.load_from_checkpoint(ckpt_path, strict=False)
++    try:
++        model = LitForcedAlignmentOnnx.load_from_checkpoint(
++            ckpt_path, strict=False, weights_only=False
++        )
++    except TypeError:
++        model = LitForcedAlignmentOnnx.load_from_checkpoint(ckpt_path, strict=False)
+ 
+     waveform = torch.randn((1, 44100), dtype=torch.float32)
+     ph_seq_id = torch.zeros((1, 37), dtype=torch.int64)
+diff --git a/infer.py b/infer.py
+index 8b4873a..7850024 100644
+--- a/infer.py
++++ b/infer.py
+@@ -94,12 +94,23 @@ def main(
+ 
+     grapheme_to_phoneme.set_in_format(in_format)
+     dataset = grapheme_to_phoneme.get_dataset(pathlib.Path(folder).rglob("*.wav"))
+-
+-    torch.set_grad_enabled(False)
+-    model = LitForcedAlignmentTask.load_from_checkpoint(ckpt)
+-    model.set_inference_mode(mode)
+-    trainer = pl.Trainer(logger=False)
+-    predictions = trainer.predict(model, dataloaders=dataset, return_predictions=True)
++
++    torch.set_grad_enabled(False)
++    # PyTorch >= 2.6 defaults `torch.load(..., weights_only=True)`, which can fail
++    # for older Lightning checkpoints. Opt out for compatibility.
++    try:
++        model = LitForcedAlignmentTask.load_from_checkpoint(ckpt, weights_only=False)
++    except TypeError:
++        # Backward-compat for older Lightning versions without the `weights_only` arg.
++        model = LitForcedAlignmentTask.load_from_checkpoint(ckpt)
++    model.set_inference_mode(mode)
++
++    # SOFA's own device selection logic is CUDA-only (it doesn't account for MPS).
++    # Let Lightning use GPU only when CUDA is available; otherwise stick to CPU to
++    # avoid MPS device-mismatch/runtime issues.
++    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
++    trainer = pl.Trainer(logger=False, accelerator=accelerator, devices=1)
++    predictions = trainer.predict(model, dataloaders=dataset, return_predictions=True)
+ 
+     predictions = get_AP.process(predictions)
+     predictions, log = post_processing(predictions)
+diff --git a/train.py b/train.py
+index 19e5ff2..0d32cb7 100644
+--- a/train.py
++++ b/train.py
+@@ -121,14 +121,19 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
+         max_steps=config["optimizer_config"]["total_steps"],
+     )
+ 
+-    ckpt_path = None
+-    if pretrained_model_path is not None:
+-        # use pretrained model TODO: load pretrained model
+-        pretrained = LitForcedAlignmentTask.load_from_checkpoint(pretrained_model_path)
+-        lightning_alignment_model.load_pretrained(pretrained)
+-    elif resume:
+-        # resume training state
+-        ckpt_path_list = (pathlib.Path("ckpt") / config["model_name"]).rglob("*.ckpt")
++    ckpt_path = None
++    if pretrained_model_path is not None:
++        # use pretrained model TODO: load pretrained model
++        try:
++            pretrained = LitForcedAlignmentTask.load_from_checkpoint(
++                pretrained_model_path, weights_only=False
++            )
++        except TypeError:
++            pretrained = LitForcedAlignmentTask.load_from_checkpoint(pretrained_model_path)
++        lightning_alignment_model.load_pretrained(pretrained)
++    elif resume:
++        # resume training state
++        ckpt_path_list = (pathlib.Path("ckpt") / config["model_name"]).rglob("*.ckpt")
+         ckpt_path_list = sorted(
+             ckpt_path_list, key=lambda x: int(x.stem.split("step=")[-1]), reverse=True
+         )

@@ -15,6 +15,7 @@ SOFA_DIR="${TP_DIR}/SOFA"
 SOFA_MODELS_DIR="${ROOT}/models/sofa"
 SOFA_MODEL_URL="https://github.com/colstone/SOFA_Models/releases/download/JPN-V0.0.2b/SOFA_model_JPN_Ver0.0.2_Beta.zip"
 SOFA_MODEL_ZIP="${SOFA_MODELS_DIR}/SOFA_model_JPN_Ver0.0.2_Beta.zip"
+SOFA_PATCH="${ROOT}/scripts/patches/sofa_compat.patch"
 
 mkdir -p "${PKGS_DIR}" "${PIP_CACHE}" "${TP_DIR}"
 
@@ -43,6 +44,26 @@ make -C "${TP_DIR}/whisper.cpp" -j"$(sysctl -n hw.ncpu || echo 4)"
 
 if [[ ! -d "${SOFA_DIR}/.git" ]]; then
   git clone --depth 1 https://github.com/qiuqiao/SOFA "${SOFA_DIR}"
+fi
+
+if [[ -f "${SOFA_PATCH}" ]]; then
+  if git -C "${SOFA_DIR}" apply --check "${SOFA_PATCH}" >/dev/null 2>&1; then
+    git -C "${SOFA_DIR}" apply "${SOFA_PATCH}"
+  elif git -C "${SOFA_DIR}" apply --reverse --check "${SOFA_PATCH}" >/dev/null 2>&1; then
+    echo "SOFA patch already applied."
+  else
+    # If the patch doesn't apply cleanly, assume upstream changed. Continue only if
+    # we can detect the key compatibility fix already exists.
+    if [[ -f "${SOFA_DIR}/infer.py" ]] \
+      && grep -q "weights_only=False" "${SOFA_DIR}/infer.py" \
+      && grep -q "torch.cuda.is_available" "${SOFA_DIR}/infer.py"; then
+      echo "SOFA appears to already include the required compatibility fix; skipping patch."
+    else
+      echo "error: failed to apply SOFA compatibility patch: ${SOFA_PATCH}"
+      echo "       Upstream SOFA may have changed; update the patch or pin a commit."
+      exit 1
+    fi
+  fi
 fi
 
 if [[ -f "${SOFA_DIR}/requirements.txt" ]]; then
