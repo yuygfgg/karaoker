@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from karaoker.pipeline.types import (
 from karaoker.textgrid_parser import textgrid_to_kana_events
 from karaoker.transcript import TranscriptProvider
 
+logger = logging.getLogger(__name__)
+
 
 def _project_root() -> Path:
     # repo_root/src/karaoker/pipeline/stages.py -> parents[3] == repo_root
@@ -33,6 +36,7 @@ def _ref_kana_from_units(units: list[ScriptUnit]) -> str:
 
 class WorkspaceStage:
     def run(self, ctx: PipelineContext) -> None:
+        logger.info("Workspace: creating dirs under %s", str(ctx.config.workdir))
         ctx.config.workdir.mkdir(parents=True, exist_ok=True)
         for d in [
             ctx.paths.audio_dir,
@@ -50,6 +54,7 @@ class AudioStage:
         paths = ctx.paths
 
         song_wav = paths.audio_dir / "song.wav"
+        logger.info("Audio: ffmpeg -> %s", str(song_wav))
         ensure_wav_16k_mono(
             ffmpeg=config.ffmpeg,
             input_audio=config.input_path,
@@ -67,29 +72,32 @@ class AudioStage:
             dereverb_dir = paths.audio_dir / "dereverb"
             vocals_raw = sep_dir / "vocals_raw.wav"
 
-            run_audio_separator(
-                audio_separator=config.audio_separator,
-                input_audio=config.input_path,
-                output_audio=vocals_raw,
-                model_filename=config.audio_separator_model,
-                # Cache models under the repo so repeated runs reuse downloads.
-                model_file_dir=_project_root() / "models" / "audio_separator",
-            )
+            logger.info("Audio: separating vocals -> %s", str(vocals_raw))
+            # run_audio_separator(
+            #     audio_separator=config.audio_separator,
+            #     input_audio=config.input_path,
+            #     output_audio=vocals_raw,
+            #     model_filename=config.audio_separator_model,
+            #     # Cache models under the repo so repeated runs reuse downloads.
+            #     model_file_dir=_project_root() / "models" / "audio_separator",
+            # )
 
             vocals_dry_raw = vocals_raw
             if config.enable_dereverb:
                 vocals_dry_raw = dereverb_dir / "vocals_dry_raw.wav"
-                run_audio_separator(
-                    audio_separator=config.audio_separator,
-                    input_audio=vocals_raw,
-                    output_audio=vocals_dry_raw,
-                    model_filename=config.dereverb_model,
-                    single_stem="noreverb",
-                    pick_stem="noreverb",
-                    model_file_dir=_project_root() / "models" / "audio_separator",
-                )
+                logger.info("Audio: de-reverb -> %s", str(vocals_dry_raw))
+                # run_audio_separator(
+                #     audio_separator=config.audio_separator,
+                #     input_audio=vocals_raw,
+                #     output_audio=vocals_dry_raw,
+                #     model_filename=config.dereverb_model,
+                #     single_stem="noreverb",
+                #     pick_stem="noreverb",
+                #     model_file_dir=_project_root() / "models" / "audio_separator",
+                # )
 
             vocals_dry_16k = paths.audio_dir / "vocals_dry.wav"
+            logger.info("Audio: ffmpeg -> %s", str(vocals_dry_16k))
             ensure_wav_16k_mono(
                 ffmpeg=config.ffmpeg,
                 input_audio=vocals_dry_raw,
@@ -100,6 +108,7 @@ class AudioStage:
             if config.enable_silero_vad:
                 from karaoker.external.silero_vad import zero_non_speech_with_silero_vad
 
+                logger.info("Audio: Silero VAD gating -> %s", str(vocals_wav))
                 vad_speech_segments_ms = zero_non_speech_with_silero_vad(
                     input_wav=vocals_dry_16k,
                     output_wav=vocals_wav,
@@ -120,6 +129,9 @@ class AudioStage:
             from karaoker.f0_flatten import WorldF0FlattenSettings, world_flatten_f0_wav
 
             mfa_input = paths.audio_dir / "mfa_input.wav"
+            logger.info(
+                "Audio: F0 preprocess (%s) -> %s", config.mfa_f0_mode, str(mfa_input)
+            )
             report_json = paths.audio_dir / "mfa_input.world.json"
             settings = WorldF0FlattenSettings(
                 mode="constant" if config.mfa_f0_mode == "constant" else "flatten",
@@ -150,11 +162,16 @@ class TranscriptStage:
     def run(self, ctx: PipelineContext) -> None:
         if ctx.audio is None:
             raise ValueError("Audio stage must run before transcript stage.")
+        if ctx.config.lyrics_lrc is not None:
+            logger.info("Transcript: using LRC %s", str(ctx.config.lyrics_lrc))
+        else:
+            logger.info("Transcript: ASR backend=%s", str(ctx.config.asr_backend))
         ctx.transcript = self._provider.transcribe(
             audio=ctx.audio,
             paths=ctx.paths,
             config=ctx.config,
         )
+        logger.info("Transcript: %d segments", len(ctx.transcript.segments))
 
 
 class KanaStage:
@@ -165,14 +182,30 @@ class KanaStage:
         if ctx.transcript is None:
             raise ValueError("Transcript stage must run before kana stage.")
 
-        for seg in ctx.transcript.segments:
-            if seg.script_units is None:
-                ref_kana, units = self._converter.to_kana(
-                    seg.text, output=ctx.config.kana_output
+        segs_missing = [
+            seg for seg in ctx.transcript.segments if seg.script_units is None
+        ]
+        if segs_missing:
+            logger.info(
+                "Kana: converting %d segments via %s",
+                len(segs_missing),
+                self._converter.__class__.__name__,
+            )
+            texts = [seg.text for seg in segs_missing]
+            results = self._converter.to_kana_batch(
+                texts, output=ctx.config.kana_output
+            )
+            if len(results) != len(segs_missing):
+                raise ValueError(
+                    "KanaConverter.to_kana_batch returned unexpected length: "
+                    f"got={len(results)} expected={len(segs_missing)}"
                 )
+            for seg, (ref_kana, units) in zip(segs_missing, results, strict=True):
                 seg.ref_kana = ref_kana
                 seg.script_units = units
-            elif seg.ref_kana is None:
+
+        for seg in ctx.transcript.segments:
+            if seg.script_units is not None and seg.ref_kana is None:
                 seg.ref_kana = _ref_kana_from_units(seg.script_units)
 
         if ctx.transcript.ref_kana is None:
@@ -183,11 +216,15 @@ class KanaStage:
 class CorpusStage:
     def run(self, ctx: PipelineContext) -> None:
         if ctx.audio is None or ctx.transcript is None:
-            raise ValueError("Audio and transcript stages must run before corpus stage.")
+            raise ValueError(
+                "Audio and transcript stages must run before corpus stage."
+            )
 
         corpus_dir = ctx.paths.alignment_dir / "corpus"
         corpus_dir.mkdir(parents=True, exist_ok=True)
-        for p in list(corpus_dir.glob("utt_*.wav")) + list(corpus_dir.glob("utt_*.lab")):
+        for p in list(corpus_dir.glob("utt_*.wav")) + list(
+            corpus_dir.glob("utt_*.lab")
+        ):
             p.unlink(missing_ok=True)
 
         items: list[CorpusItem] = []
@@ -195,6 +232,10 @@ class CorpusStage:
         kana_lines: list[str] = []
         script_parts: list[str] = []
         script_len = 0
+
+        logger.info(
+            "Corpus: building utterances from %d segments", len(ctx.transcript.segments)
+        )
 
         for seg in ctx.transcript.segments:
             ref_kana = (seg.ref_kana or "").strip()
@@ -240,6 +281,10 @@ class CorpusStage:
                     segment=seg,
                 )
             )
+            if len(items) % 25 == 0:
+                logger.info("Corpus: %d utterances", len(items))
+
+        logger.info("Corpus: built %d utterances", len(items))
 
         if ctx.transcript.kind != "lrc":
             script_text = " ".join(script_parts).strip()
@@ -299,6 +344,11 @@ class AlignmentStage:
                 if ctx.config.kana_output == "katakana"
                 else "japanese_mfa"
             )
+            logger.info(
+                "Alignment: generating dict via MFA G2P (%s, %d tokens)",
+                g2p_model,
+                len(tokens),
+            )
             gen_dict = ctx.paths.alignment_dir / "g2p.dict"
             self._aligner.g2p(
                 word_list=words_path,
@@ -310,6 +360,10 @@ class AlignmentStage:
         out_dir = ctx.paths.alignment_dir / "textgrids"
         for p in out_dir.rglob("*.TextGrid"):
             p.unlink(missing_ok=True)
+        logger.info(
+            "Alignment: MFA align (%d utterances)",
+            len(ctx.corpus.items),
+        )
         self._aligner.align_corpus(
             corpus_dir=ctx.corpus.corpus_dir,
             pronunciation_dict=mfa_dict_to_use,
@@ -325,7 +379,9 @@ class AlignmentStage:
                 if not tg.exists():
                     continue
 
-                line_events = textgrid_to_kana_events(tg, offset_seconds=item.segment.start)
+                line_events = textgrid_to_kana_events(
+                    tg, offset_seconds=item.segment.start
+                )
                 for e in line_events:
                     e["line_i"] = idx
                     e["line_event_i"] = e.get("i")
@@ -382,7 +438,9 @@ class AlignmentStage:
                     if isinstance(e.get("script_unit_i"), int):
                         e["script_unit_i"] = int(e["script_unit_i"]) + unit_base
                     if isinstance(e.get("script_char_start"), int):
-                        e["script_char_start"] = int(e["script_char_start"]) + char_offset
+                        e["script_char_start"] = (
+                            int(e["script_char_start"]) + char_offset
+                        )
                     if isinstance(e.get("script_char_end"), int):
                         e["script_char_end"] = int(e["script_char_end"]) + char_offset
 

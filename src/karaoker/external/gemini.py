@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from karaoker.kana import kana_tokens
+
+logger = logging.getLogger(__name__)
 
 KanaOutput = Literal["hiragana", "katakana"]
 
@@ -406,15 +410,31 @@ def parse_gemini_asr_kana_response(
     return _parse_gemini_block_format(raw, kana_output=kana_output)
 
 
-def build_gemini_kana_prompt(*, kana_output: KanaOutput) -> str:
+def build_gemini_kana_prompt(
+    *, kana_output: KanaOutput, use_audio: bool = False
+) -> str:
     kana_name = "HIRAGANA" if kana_output == "hiragana" else "KATAKANA"
     example_kana = "か ら お け" if kana_output == "hiragana" else "カ ラ オ ケ"
+    task_lines: list[str]
+    if use_audio:
+        task_lines = [
+            "- You will be given BOTH the lyrics text and an audio file (dry vocals / isolated singing).",
+            "- The provided text appears somewhere in the audio. Find where it is sung.",
+            "- Use the audio to disambiguate pronunciation when the text alone is ambiguous.",
+            f"- Output the *sung* pronunciation reading in {kana_name}.",
+            "- Do NOT transcribe new lyrics; only provide the reading of the provided text.",
+            "- If the audio is missing/unhelpful for some parts, fall back to the best reading from text.",
+        ]
+    else:
+        task_lines = [
+            "- Convert the provided Japanese text into its reading in " f"{kana_name}.",
+        ]
     return "\n".join(
         [
             "You are a Japanese reading (kana) converter.",
             "",
             "Task:",
-            "- Convert the provided Japanese text into its reading in " f"{kana_name}.",
+            *task_lines,
             "",
             "Output format (STRICT):",
             "- Return ONLY valid JSON. No markdown, no code fences, no explanations.",
@@ -431,6 +451,80 @@ def build_gemini_kana_prompt(*, kana_output: KanaOutput) -> str:
             "",
             "Example:",
             f'{{ "kana": "{example_kana}" }}',
+        ]
+    )
+
+
+def build_gemini_kana_batch_prompt(
+    *, kana_output: KanaOutput, use_audio: bool = False
+) -> str:
+    kana_name = "HIRAGANA" if kana_output == "hiragana" else "KATAKANA"
+    example_1_text = "風吹けば"
+    example_1_kana = "か ぜ ふ け ば" if kana_output == "hiragana" else "カ ゼ フ ケ バ"
+    example_2_text = "世界へ"
+    example_2_kana = "せ か い え" if kana_output == "hiragana" else "セ カ イ エ"
+
+    task_lines: list[str]
+    if use_audio:
+        task_lines = [
+            "- You will be given BOTH an audio file (dry vocals / isolated singing) and a JSON payload of lyric segments.",
+            "- For each segment, output the *sung* pronunciation reading in "
+            f"{kana_name}, using the audio to disambiguate when the text alone is ambiguous.",
+            "- Do NOT transcribe new lyrics; only provide readings for the provided segment texts.",
+        ]
+    else:
+        task_lines = [
+            "- You will be given a JSON payload of Japanese text segments.",
+            "- For each segment, convert the text into its reading in " f"{kana_name}.",
+        ]
+
+    return "\n".join(
+        [
+            "You are a Japanese reading (kana) converter.",
+            "",
+            "Task:",
+            *task_lines,
+            "",
+            "Input format:",
+            '- You will receive JSON: {"segments": [{"i": int, "text": string}, ...]}',
+            "- `i` starts at 1 and uniquely identifies a segment.",
+            "",
+            "Output format (STRICT):",
+            "- Return ONLY valid JSON. No markdown, no code fences, no explanations.",
+            '- Output JSON must be: {"segments": [{"i": int, "kana": string}, ...]}',
+            "- Every input segment must appear exactly once in the output (same `i`).",
+            "",
+            "Kana tokenization rules (IMPORTANT):",
+            "- Output kana only (plus 'ー' and spaces). Do not output punctuation.",
+            "- Separate tokens with SINGLE spaces.",
+            "- Do NOT output standalone small kana, standalone sokuon (ッ/っ),",
+            "  or standalone prolonged mark (ー).",
+            "  they must be attached to the preceding token.",
+            "- Do NOT output romaji.",
+            "",
+            "Example input:",
+            json.dumps(
+                {
+                    "segments": [
+                        {"i": 1, "text": example_1_text},
+                        {"i": 2, "text": example_2_text},
+                    ]
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "",
+            "Example output:",
+            json.dumps(
+                {
+                    "segments": [
+                        {"i": 1, "kana": example_1_kana},
+                        {"i": 2, "kana": example_2_kana},
+                    ]
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
         ]
     )
 
@@ -453,6 +547,18 @@ def _require_google_genai():
     return genai
 
 
+@lru_cache(maxsize=1)
+def _get_genai_client():
+    genai = _require_google_genai()
+    return genai.Client()
+
+
+@lru_cache(maxsize=4)
+def _upload_audio_cached(audio_path: str, *, mtime_ns: int, size: int) -> Any:
+    client = _get_genai_client()
+    return client.files.upload(file=audio_path)
+
+
 def run_gemini_asr_with_kana(
     *,
     input_audio: Path,
@@ -466,13 +572,13 @@ def run_gemini_asr_with_kana(
     Writes a structured JSON payload to `output_json` and returns the parsed dict.
     """
     _require_gemini_key()
-    genai = _require_google_genai()
+    client = _get_genai_client()
+    logger.info("Gemini ASR: model=%s audio=%s", model, str(input_audio))
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     raw_path = output_json.with_suffix(output_json.suffix + ".raw.txt")
 
     prompt = build_gemini_asr_kana_prompt(kana_output=kana_output)
-    client = genai.Client()
     uploaded = client.files.upload(file=str(input_audio))
     response = client.models.generate_content(model=model, contents=[prompt, uploaded])
     text = cast(str, getattr(response, "text", "") or "")
@@ -505,17 +611,45 @@ def run_gemini_kana_convert(
     *,
     text: str,
     kana_output: KanaOutput,
+    input_audio: Path | str | None = None,
     model: str = "gemini-3-flash-preview",
 ) -> str:
     """
     Call Gemini to convert Japanese text to spaced kana tokens.
+
+    If `input_audio` is provided, it will be uploaded and sent alongside `text`
+    so Gemini can use the sung pronunciation to disambiguate readings.
     """
     _require_gemini_key()
-    genai = _require_google_genai()
+    client = _get_genai_client()
+    logger.debug(
+        "Gemini kana: model=%s audio=%s",
+        model,
+        str(input_audio) if input_audio is not None else "none",
+    )
 
-    prompt = build_gemini_kana_prompt(kana_output=kana_output)
-    client = genai.Client()
-    response = client.models.generate_content(model=model, contents=[prompt, text])
+    contents: list[Any]
+    if input_audio is None:
+        prompt = build_gemini_kana_prompt(kana_output=kana_output, use_audio=False)
+        contents = [prompt, text]
+    else:
+        prompt = build_gemini_kana_prompt(kana_output=kana_output, use_audio=True)
+        audio_path = Path(input_audio).expanduser().resolve()
+        if not audio_path.exists():
+            raise FileNotFoundError(f"Gemini kana input_audio not found: {audio_path}")
+        st = audio_path.stat()
+        uploaded = _upload_audio_cached(
+            str(audio_path),
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+        )
+        contents = [
+            prompt,
+            "LYRICS_TEXT:\n" + text,
+            uploaded,
+        ]
+
+    response = client.models.generate_content(model=model, contents=contents)
     resp_text = cast(str, getattr(response, "text", "") or "")
     obj = _extract_json(resp_text)
 
@@ -528,3 +662,122 @@ def run_gemini_kana_convert(
         raise ValueError('Gemini kana response must be JSON: {"kana": "..."}.')
 
     return normalize_spaced_kana(kana_raw, output=kana_output)
+
+
+def _coerce_int(v: object) -> int | None:
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if s.isdigit():
+            return int(s)
+    return None
+
+
+def _parse_gemini_kana_batch_response(obj: object) -> dict[int, str]:
+    raw_segs: object
+    if isinstance(obj, dict):
+        raw_segs = obj.get("segments", obj)
+    else:
+        raw_segs = obj
+
+    # Lenient fallback: {"segments": {"1": "...", "2": "..."}}.
+    if isinstance(raw_segs, dict):
+        out: dict[int, str] = {}
+        for k, v in raw_segs.items():
+            i = _coerce_int(k)
+            if i is None:
+                continue
+            if isinstance(v, str):
+                out[i] = v
+            elif isinstance(v, dict) and isinstance(v.get("kana"), str):
+                out[i] = cast(str, v["kana"])
+        return out
+
+    if not isinstance(raw_segs, list):
+        raise ValueError(
+            "Gemini JSON must be a list, or an object with a 'segments' list."
+        )
+
+    out: dict[int, str] = {}
+    for idx, item in enumerate(raw_segs):
+        if isinstance(item, str):
+            out[idx + 1] = item
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        i = _coerce_int(item.get("i"))
+        if i is None:
+            i = idx + 1
+
+        kana = item.get("kana")
+        if isinstance(kana, str):
+            out[i] = kana
+
+    return out
+
+
+def run_gemini_kana_convert_batch(
+    *,
+    texts: list[str],
+    kana_output: KanaOutput,
+    input_audio: Path | str | None = None,
+    model: str = "gemini-3-flash-preview",
+) -> list[str]:
+    """
+    Call Gemini to convert many Japanese text segments to spaced kana tokens in one request.
+
+    If `input_audio` is provided, it will be uploaded and sent alongside the JSON payload
+    so Gemini can use sung pronunciation to disambiguate readings.
+    """
+    if not texts:
+        return []
+
+    _require_gemini_key()
+    client = _get_genai_client()
+    logger.info(
+        "Gemini kana batch: model=%s segments=%d audio=%s",
+        model,
+        len(texts),
+        "yes" if input_audio is not None else "no",
+    )
+
+    prompt = build_gemini_kana_batch_prompt(
+        kana_output=kana_output, use_audio=input_audio is not None
+    )
+    payload_text = json.dumps(
+        {"segments": [{"i": i + 1, "text": text} for i, text in enumerate(texts)]},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    contents: list[Any] = [prompt, payload_text]
+    if input_audio is not None:
+        audio_path = Path(input_audio).expanduser().resolve()
+        if not audio_path.exists():
+            raise FileNotFoundError(f"Gemini kana input_audio not found: {audio_path}")
+        st = audio_path.stat()
+        uploaded = _upload_audio_cached(
+            str(audio_path),
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+        )
+        contents = [prompt, uploaded, payload_text]
+
+    response = client.models.generate_content(model=model, contents=contents)
+    resp_text = cast(str, getattr(response, "text", "") or "")
+    obj = _extract_json(resp_text)
+    mapping = _parse_gemini_kana_batch_response(obj)
+
+    missing = [i for i in range(1, len(texts) + 1) if i not in mapping]
+    if missing:
+        raise ValueError(
+            "Gemini kana batch response missing segment indices: "
+            f"{missing[:20]}{'...' if len(missing) > 20 else ''}"
+        )
+
+    return [
+        normalize_spaced_kana(mapping[i], output=kana_output)
+        for i in range(1, len(texts) + 1)
+    ]

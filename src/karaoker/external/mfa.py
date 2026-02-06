@@ -8,6 +8,10 @@ from pathlib import Path
 from karaoker.utils import run_checked
 
 
+_DEFAULT_ALIGN_BEAM = 500
+_DEFAULT_ALIGN_RETRY_BEAM = 2500
+
+
 def run_mfa_g2p(
     *,
     mfa: str,
@@ -92,6 +96,10 @@ def run_mfa_align(
             str(acoustic_model),
             str(out_dir),
             "--clean",
+            "--beam",
+            str(_DEFAULT_ALIGN_BEAM),
+            "--retry_beam",
+            str(_DEFAULT_ALIGN_RETRY_BEAM),
         ]
         run_checked(
             cmd,
@@ -140,9 +148,9 @@ def run_mfa_align_corpus(
         "--clean",
         "--single_speaker",
         "--beam",
-        "100",
+        str(_DEFAULT_ALIGN_BEAM),
         "--retry_beam",
-        "400",
+        str(_DEFAULT_ALIGN_RETRY_BEAM),
     ]
     run_checked(
         cmd,

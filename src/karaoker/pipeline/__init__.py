@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from time import perf_counter
 
 from karaoker.aligner import MfaAlignerProvider
 from karaoker.kana_convert import KanaConverter, build_kana_converter
@@ -29,6 +31,8 @@ __all__ = [
     "PipelinePaths",
 ]
 
+logger = logging.getLogger(__name__)
+
 
 class KaraokerPipeline:
     def __init__(
@@ -51,8 +55,15 @@ class KaraokerPipeline:
     def run(self, config: PipelineConfig) -> Path:
         paths = PipelinePaths.from_workdir(config.workdir)
         ctx = PipelineContext(config=config, paths=paths)
+        logger.info("Workdir: %s", str(config.workdir))
         for stage in self._stages:
+            stage_name = stage.__class__.__name__
+            logger.info("[%s] start", stage_name)
+            t0 = perf_counter()
             stage.run(ctx)
+            dt = perf_counter() - t0
+            logger.info("[%s] done (%.1fs)", stage_name, dt)
+        logger.info("Wrote: %s", str(paths.output_dir / "subtitles.json"))
         return paths.output_dir / "subtitles.json"
 
 
@@ -67,9 +78,20 @@ def build_default_pipeline(config: PipelineConfig) -> KaraokerPipeline:
             model=config.gemini_model,
         )
 
+    # If we have separated dry vocals available, feed them into the Gemini kana converter
+    # so it can use sung pronunciation to disambiguate readings.
+    kana_input_audio: Path | None = None
+    if config.kana_backend.strip().lower() == "gemini" and config.audio_separator:
+        paths = PipelinePaths.from_workdir(config.workdir)
+        kana_input_audio = paths.audio_dir / "vocals_dry.wav"
+
     return KaraokerPipeline(
         transcript_provider=transcript_provider,
-        kana_converter=build_kana_converter(config.kana_backend, model=config.gemini_model),
+        kana_converter=build_kana_converter(
+            config.kana_backend,
+            model=config.gemini_model,
+            input_audio=kana_input_audio,
+        ),
         aligner=MfaAlignerProvider(mfa=config.mfa),
     )
 

@@ -19,6 +19,17 @@ class KanaConverter(ABC):
         """
         raise NotImplementedError
 
+    def to_kana_batch(
+        self, texts: list[str], *, output: str
+    ) -> list[tuple[str, list[ScriptUnit]]]:
+        """
+        Batch kana conversion.
+
+        Default implementation falls back to calling `to_kana()` for each item.
+        Backends with expensive per-call overhead should override.
+        """
+        return [self.to_kana(t, output=output) for t in texts]
+
 
 def build_kana_converter(name: str, /, **kwargs) -> KanaConverter:
     """
