@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from karaoker.lyrics import parse_lrc
-from karaoker.pipeline_types import (
+from karaoker.pipeline.types import (
     AudioAssets,
     PipelineConfig,
     PipelinePaths,

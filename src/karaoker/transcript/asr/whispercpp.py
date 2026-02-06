@@ -7,7 +7,7 @@ from typing import Any
 
 from karaoker.asr_postprocess import drop_whisper_hallucinations_in_silence
 from karaoker.external.whispercpp import run_whisper_cpp
-from karaoker.pipeline_types import (
+from karaoker.pipeline.types import (
     AsrResult,
     AudioAssets,
     PipelineConfig,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from karaoker.external.gemini import run_gemini_asr_with_kana
 from karaoker.mapping import ScriptUnit
-from karaoker.pipeline_types import (
+from karaoker.pipeline.types import (
     AsrResult,
     AudioAssets,
     PipelineConfig,

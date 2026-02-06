@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from karaoker.pipeline_types import AudioAssets, PipelineConfig, PipelinePaths, TranscriptResult
+from karaoker.pipeline.types import AudioAssets, PipelineConfig, PipelinePaths, TranscriptResult
 
 
 class TranscriptProvider(ABC):
