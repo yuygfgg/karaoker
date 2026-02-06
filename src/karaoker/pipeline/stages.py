@@ -16,6 +16,7 @@ from karaoker.pipeline.types import (
     CorpusResult,
     PipelineContext,
 )
+from karaoker.sofa_dict import detect_sofa_dictionary_kind, generate_sofa_kana_dictionary
 from karaoker.textgrid_parser import textgrid_to_kana_events
 from karaoker.transcript import TranscriptProvider
 
@@ -333,41 +334,73 @@ class AlignmentStage:
         if ctx.corpus is None or ctx.transcript is None:
             raise ValueError("Corpus stage must run before alignment stage.")
 
-        mfa_dict_to_use = ctx.config.mfa_dict
-        if mfa_dict_to_use is None:
-            tokens = sorted(set(ctx.corpus.all_kana_tokens))
-            words_path = ctx.paths.alignment_dir / "words.txt"
-            words_path.write_text("\n".join(tokens) + "\n", encoding="utf-8")
+        backend = str(ctx.config.aligner_backend).strip().lower()
 
-            g2p_model = (
-                "japanese_katakana_mfa"
-                if ctx.config.kana_output == "katakana"
-                else "japanese_mfa"
-            )
-            logger.info(
-                "Alignment: generating dict via MFA G2P (%s, %d tokens)",
-                g2p_model,
-                len(tokens),
-            )
-            gen_dict = ctx.paths.alignment_dir / "g2p.dict"
-            self._aligner.g2p(
-                word_list=words_path,
-                g2p_model=g2p_model,
-                output_dictionary=gen_dict,
-            )
-            mfa_dict_to_use = str(gen_dict)
+        pronunciation_dict_to_use: str | None
+        acoustic_model_to_use: str
+
+        if backend == "mfa":
+            pronunciation_dict_to_use = ctx.config.mfa_dict
+            acoustic_model_to_use = ctx.config.mfa_acoustic_model
+            if pronunciation_dict_to_use is None:
+                tokens = sorted(set(ctx.corpus.all_kana_tokens))
+                words_path = ctx.paths.alignment_dir / "words.txt"
+                words_path.write_text("\n".join(tokens) + "\n", encoding="utf-8")
+
+                g2p_model = (
+                    "japanese_katakana_mfa"
+                    if ctx.config.kana_output == "katakana"
+                    else "japanese_mfa"
+                )
+                logger.info(
+                    "Alignment: generating dict via MFA G2P (%s, %d tokens)",
+                    g2p_model,
+                    len(tokens),
+                )
+                gen_dict = ctx.paths.alignment_dir / "g2p.dict"
+                self._aligner.g2p(
+                    word_list=words_path,
+                    g2p_model=g2p_model,
+                    output_dictionary=gen_dict,
+                )
+                pronunciation_dict_to_use = str(gen_dict)
+        elif backend == "sofa":
+            if ctx.config.sofa_dict is None or ctx.config.sofa_ckpt is None:
+                raise ValueError(
+                    "Alignment: SOFA backend requires sofa_dict and sofa_ckpt "
+                    "(pass via --sofa-dict/--sofa-ckpt)."
+                )
+            sofa_dict_path = Path(ctx.config.sofa_dict).expanduser().resolve()
+            dict_kind = detect_sofa_dictionary_kind(sofa_dict_path)
+            if dict_kind == "romaji":
+                # SOFA Japanese models often ship a romaji-keyed dictionary. Our `.lab` files are
+                # spaced-kana, so generate a temporary kana-keyed dictionary for this corpus.
+                adapted = ctx.paths.alignment_dir / "sofa_kana.dict"
+                generate_sofa_kana_dictionary(
+                    kana_tokens=ctx.corpus.all_kana_tokens,
+                    romaji_dictionary=sofa_dict_path,
+                    output_dictionary=adapted,
+                )
+                pronunciation_dict_to_use = str(adapted)
+            else:
+                pronunciation_dict_to_use = str(sofa_dict_path)
+            acoustic_model_to_use = ctx.config.sofa_ckpt
+        else:
+            raise ValueError(f"Unknown aligner backend: {ctx.config.aligner_backend}")
+
+        if pronunciation_dict_to_use is None:
+            raise ValueError("Alignment: pronunciation dictionary is required.")
 
         out_dir = ctx.paths.alignment_dir / "textgrids"
         for p in out_dir.rglob("*.TextGrid"):
             p.unlink(missing_ok=True)
         logger.info(
-            "Alignment: MFA align (%d utterances)",
-            len(ctx.corpus.items),
+            "Alignment: %s align (%d utterances)", backend, len(ctx.corpus.items)
         )
         self._aligner.align_corpus(
             corpus_dir=ctx.corpus.corpus_dir,
-            pronunciation_dict=mfa_dict_to_use,
-            acoustic_model=ctx.config.mfa_acoustic_model,
+            pronunciation_dict=str(pronunciation_dict_to_use),
+            acoustic_model=str(acoustic_model_to_use),
             output_dir=out_dir,
         )
 

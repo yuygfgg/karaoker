@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from karaoker.external.ffmpeg import ensure_wav_16k_mono
@@ -29,6 +30,11 @@ def _default_whisper_cli_path() -> str:
             / "third_party/whisper.cpp/build/bin/whisper-cli"
         )
     )
+
+
+def _default_sofa_root() -> str:
+    # Optional: user-managed clone of https://github.com/qiuqiao/SOFA
+    return str((Path(__file__).resolve().parents[2] / "third_party/SOFA"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -162,6 +168,39 @@ def build_parser() -> argparse.ArgumentParser:
         default="japanese_mfa",
         help="MFA acoustic model path or installed model name (default: japanese_mfa).",
     )
+
+    run.add_argument(
+        "--aligner-backend",
+        choices=["mfa", "sofa"],
+        default="mfa",
+        help="Forced aligner backend (default: %(default)s).",
+    )
+    run.add_argument(
+        "--sofa-root",
+        default=_default_sofa_root(),
+        help=(
+            "SOFA repo root (must contain infer.py). "
+            "Only used when --aligner-backend=sofa (default: %(default)s)."
+        ),
+    )
+    run.add_argument(
+        "--sofa-python",
+        default=sys.executable,
+        help="Python executable to run SOFA (default: current interpreter).",
+    )
+    run.add_argument(
+        "--sofa-dict",
+        default=None,
+        help=(
+            "SOFA dictionary path (required when --aligner-backend=sofa). "
+            "If this is a romaji-keyed dictionary, karaoker will adapt it for kana transcripts."
+        ),
+    )
+    run.add_argument(
+        "--sofa-ckpt",
+        default=None,
+        help="SOFA checkpoint path (required when --aligner-backend=sofa).",
+    )
     run.add_argument(
         "--mfa-f0",
         choices=["none", "constant", "flatten"],
@@ -276,6 +315,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.lyrics_lrc:
             lyrics_lrc = Path(args.lyrics_lrc)
 
+        if args.aligner_backend == "sofa":
+            if not args.sofa_dict or not args.sofa_ckpt:
+                p.error(
+                    "--aligner-backend=sofa requires both --sofa-dict and --sofa-ckpt."
+                )
+
         run_pipeline(
             input_path=Path(args.input),
             workdir=Path(args.workdir),
@@ -291,9 +336,14 @@ def main(argv: list[str] | None = None) -> int:
             silero_vad_speech_pad_ms=args.silero_vad_speech_pad_ms,
             whisper_cpp=args.whisper_cpp,
             whisper_model=Path(args.whisper_model),
+            aligner_backend=args.aligner_backend,
             mfa=args.mfa,
             mfa_dict=args.mfa_dict,
             mfa_acoustic_model=args.mfa_acoustic_model,
+            sofa_python=args.sofa_python,
+            sofa_root=Path(args.sofa_root) if args.sofa_root else None,
+            sofa_dict=args.sofa_dict,
+            sofa_ckpt=args.sofa_ckpt,
             kana_output=args.kana_output,
             lyrics_lrc=lyrics_lrc,
             asr_backend=args.asr_backend,

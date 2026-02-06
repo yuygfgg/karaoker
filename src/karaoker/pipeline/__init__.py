@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from time import perf_counter
 
-from karaoker.aligner import MfaAlignerProvider
+from karaoker.aligner import AlignerProvider, MfaAlignerProvider, SofaAlignerProvider
 from karaoker.kana_convert import KanaConverter, build_kana_converter
 from karaoker.transcript import LrcTranscriptProvider, TranscriptProvider
 from karaoker.transcript.asr.base import build_asr_transcript_provider
@@ -40,7 +41,7 @@ class KaraokerPipeline:
         *,
         transcript_provider: TranscriptProvider,
         kana_converter: KanaConverter,
-        aligner: MfaAlignerProvider,
+        aligner: AlignerProvider,
     ) -> None:
         self._stages = [
             WorkspaceStage(),
@@ -92,8 +93,22 @@ def build_default_pipeline(config: PipelineConfig) -> KaraokerPipeline:
             model=config.gemini_model,
             input_audio=kana_input_audio,
         ),
-        aligner=MfaAlignerProvider(mfa=config.mfa),
+        aligner=_build_aligner(config),
     )
+
+
+def _build_aligner(config: PipelineConfig) -> AlignerProvider:
+    backend = str(config.aligner_backend).strip().lower()
+    if backend == "mfa":
+        return MfaAlignerProvider(mfa=config.mfa)
+    if backend == "sofa":
+        if config.sofa_root is None:
+            raise ValueError("aligner_backend=sofa requires sofa_root (path to SOFA repo).")
+        return SofaAlignerProvider(
+            sofa_python=config.sofa_python,
+            sofa_root=Path(config.sofa_root),
+        )
+    raise ValueError(f"Unknown aligner_backend: {config.aligner_backend}")
 
 
 def run_pipeline(
@@ -112,9 +127,14 @@ def run_pipeline(
     silero_vad_speech_pad_ms: int = 30,
     whisper_cpp: str | None = None,
     whisper_model: Path | None = None,
+    aligner_backend: str = "mfa",
     mfa: str,
     mfa_dict: str | None,
     mfa_acoustic_model: str,
+    sofa_python: str = sys.executable,
+    sofa_root: Path | None = None,
+    sofa_dict: str | None = None,
+    sofa_ckpt: str | None = None,
     kana_output: str,
     lyrics_lrc: Path | None = None,
     asr_backend: str = "whispercpp",
@@ -126,7 +146,7 @@ def run_pipeline(
     mfa_f0_preserve_unvoiced: bool = True,
 ) -> None:
     """
-    Generate per-kana timing events for a song: audio -> transcript -> MFA alignment -> JSON.
+    Generate per-kana timing events for a song: audio -> transcript -> forced alignment -> JSON.
     """
     input_path = input_path.expanduser().resolve()
     workdir = workdir.expanduser().resolve()
@@ -146,9 +166,14 @@ def run_pipeline(
         silero_vad_speech_pad_ms=silero_vad_speech_pad_ms,
         whisper_cpp=whisper_cpp,
         whisper_model=whisper_model,
+        aligner_backend=aligner_backend,
         mfa=mfa,
         mfa_dict=mfa_dict,
         mfa_acoustic_model=mfa_acoustic_model,
+        sofa_python=sofa_python,
+        sofa_root=str(sofa_root) if sofa_root is not None else None,
+        sofa_dict=sofa_dict,
+        sofa_ckpt=sofa_ckpt,
         kana_output=kana_output,
         lyrics_lrc=lyrics_lrc,
         asr_backend=asr_backend,

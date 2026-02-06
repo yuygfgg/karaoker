@@ -152,6 +152,9 @@ def textgrid_to_kana_events(
         text = itv.text.strip()
         if not text or text == "<eps>":
             continue
+        # Some aligners (e.g., SOFA) emit explicit silence markers in the "words" tier.
+        if text.upper() in {"SP", "AP"}:
+            continue
         start = float(itv.start) + float(offset_seconds)
         end = float(itv.end) + float(offset_seconds)
         events.append(

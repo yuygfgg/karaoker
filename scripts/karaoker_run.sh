@@ -26,10 +26,17 @@ Options:
   --gemini-model <name>                Default: gemini-3-flash-preview.
                                        Gemini backends require `GEMINI_API_KEY` and `pip install -e ".[gemini]"`.
 
+  --aligner-backend <mfa|sofa>        Default: mfa
+  --sofa-root <path>                  Default: ./third_party/SOFA
+  --sofa-model-dir <path>             Default: ./models/sofa
+  --sofa-python <path>                Default: repo conda env python
+  --sofa-ckpt <path>                  Optional. Overrides auto-detected SOFA checkpoint.
+  --sofa-dict <path>                  Optional. Overrides auto-detected SOFA dictionary.
+
   --lrc <path>                 Use an .lrc file as lyrics (recommended). Skips ASR.
   --separate                   Enable vocal separation (python-audio-separator) (default).
   --no-separate                Disable separation.
-  --download-models            Download required MFA/separation/VAD models before running.
+  --download-models            Download required MFA/SOFA/separation/VAD models before running.
 
   --kana-output <katakana|hiragana>   Default: katakana
   --mfa-acoustic-model <name|path>    Default: japanese_mfa
@@ -69,6 +76,14 @@ DEREVERB_MODEL="dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ck
 DEREVERB=1
 SILERO_VAD=1
 WHISPER_MODEL="large-v2" # model name (e.g. large-v2, medium, base, small, tiny)
+ALIGNER_BACKEND="mfa"
+SOFA_ROOT="${ROOT}/third_party/SOFA"
+SOFA_MODEL_DIR="${ROOT}/models/sofa"
+SOFA_MODEL_URL="https://github.com/colstone/SOFA_Models/releases/download/JPN-V0.0.2b/SOFA_model_JPN_Ver0.0.2_Beta.zip"
+SOFA_MODEL_ZIP="${SOFA_MODEL_DIR}/SOFA_model_JPN_Ver0.0.2_Beta.zip"
+SOFA_PYTHON="${ENV_PREFIX}/bin/python"
+SOFA_CKPT=""
+SOFA_DICT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,6 +97,16 @@ while [[ $# -gt 0 ]]; do
     --separate) SEPARATE=1; shift ;;
     --no-separate) SEPARATE=0; shift ;;
     --download-models) DOWNLOAD_MODELS=1; shift ;;
+    --aligner-backend) ALIGNER_BACKEND="${2:-}"; shift 2 ;;
+    --sofa-root) SOFA_ROOT="${2:-}"; shift 2 ;;
+    --sofa-model-dir)
+      SOFA_MODEL_DIR="${2:-}"
+      SOFA_MODEL_ZIP="${SOFA_MODEL_DIR}/SOFA_model_JPN_Ver0.0.2_Beta.zip"
+      shift 2
+      ;;
+    --sofa-python) SOFA_PYTHON="${2:-}"; shift 2 ;;
+    --sofa-ckpt) SOFA_CKPT="${2:-}"; shift 2 ;;
+    --sofa-dict) SOFA_DICT="${2:-}"; shift 2 ;;
     --kana-output) KANA_OUTPUT="${2:-}"; shift 2 ;;
     --mfa-acoustic-model) MFA_ACOUSTIC_MODEL="${2:-}"; shift 2 ;;
     --mfa-dict) MFA_DICT="${2:-}"; shift 2 ;;
@@ -132,6 +157,51 @@ export HTTP_PROXY=''
 export HTTPS_PROXY=''
 export http_proxy=''
 export https_proxy=''
+
+sofa_guess_ckpt() {
+  find "${SOFA_MODEL_DIR}" -type f \( -iname "*.ckpt" -o -iname "*.pt" -o -iname "*.pth" \) \
+    2>/dev/null | sort | head -n 1 || true
+}
+
+sofa_guess_dict() {
+  find "${SOFA_MODEL_DIR}" -type f \( -iname "*dict*.txt" -o -iname "*dictionary*.txt" -o -iname "*.dict" \) \
+    2>/dev/null | sort | head -n 1 || true
+}
+
+ensure_sofa_repo() {
+  [[ -f "${SOFA_ROOT}/infer.py" ]] || die "SOFA repo missing at ${SOFA_ROOT} (run ./scripts/bootstrap_local.sh)"
+}
+
+ensure_sofa_model() {
+  mkdir -p "${SOFA_MODEL_DIR}"
+
+  # If we already have a checkpoint + dictionary, do nothing.
+  local ckpt dict
+  ckpt="$(sofa_guess_ckpt)"
+  dict="$(sofa_guess_dict)"
+  if [[ -n "${ckpt}" && -n "${dict}" ]]; then
+    return 0
+  fi
+
+  # Download + extract the official Japanese beta model.
+  if [[ ! -f "${SOFA_MODEL_ZIP}" ]]; then
+    echo "Downloading SOFA model zip:"
+    echo "  ${SOFA_MODEL_URL}"
+    local tmp="${SOFA_MODEL_ZIP}.part"
+    rm -f "${tmp}"
+    NO_PROXY='*' HTTP_PROXY='' HTTPS_PROXY='' http_proxy='' https_proxy='' \
+      curl -L --fail --retry 5 --retry-delay 1 --output "${tmp}" "${SOFA_MODEL_URL}"
+    mv "${tmp}" "${SOFA_MODEL_ZIP}"
+  fi
+
+  echo "Extracting SOFA model zip -> ${SOFA_MODEL_DIR}"
+  unzip -q -o "${SOFA_MODEL_ZIP}" -d "${SOFA_MODEL_DIR}"
+
+  ckpt="$(sofa_guess_ckpt)"
+  dict="$(sofa_guess_dict)"
+  [[ -n "${ckpt}" ]] || die "SOFA model extracted but no checkpoint found under ${SOFA_MODEL_DIR}"
+  [[ -n "${dict}" ]] || die "SOFA model extracted but no dictionary found under ${SOFA_MODEL_DIR}"
+}
 
 ensure_mfa_models() {
   # These commands require network if the models aren't present yet.
@@ -231,6 +301,10 @@ PY
 
 if [[ "${DOWNLOAD_MODELS}" -eq 1 ]]; then
   ensure_mfa_models
+  if [[ "${ALIGNER_BACKEND}" == "sofa" ]]; then
+    ensure_sofa_repo
+    ensure_sofa_model
+  fi
   if [[ "${SEPARATE}" -eq 1 ]]; then
     [[ -x "${AUDIO_SEP}" ]] || die "audio-separator not found in env at ${AUDIO_SEP}"
     ensure_audio_separator_model
@@ -252,12 +326,40 @@ cmd=(
   --gemini-model "${GEMINI_MODEL}"
   --ffmpeg "${FFMPEG}"
   --mfa "${MFA}"
+  --aligner-backend "${ALIGNER_BACKEND}"
   --kana-output "${KANA_OUTPUT}"
   --mfa-acoustic-model "${MFA_ACOUSTIC_MODEL}"
   --mfa-f0 "${MFA_F0}"
   --mfa-f0-constant-hz "${MFA_F0_CONSTANT_HZ}"
   --mfa-f0-flatten-factor "${MFA_F0_FLATTEN_FACTOR}"
 )
+
+if [[ "${ALIGNER_BACKEND}" == "sofa" ]]; then
+  ensure_sofa_repo
+  [[ -d "${SOFA_MODEL_DIR}" ]] || mkdir -p "${SOFA_MODEL_DIR}"
+  if [[ -z "${SOFA_CKPT}" ]]; then
+    SOFA_CKPT="$(sofa_guess_ckpt)"
+  fi
+  if [[ -z "${SOFA_DICT}" ]]; then
+    SOFA_DICT="$(sofa_guess_dict)"
+  fi
+
+  if [[ -z "${SOFA_CKPT}" || -z "${SOFA_DICT}" ]]; then
+    ensure_sofa_model
+    SOFA_CKPT="${SOFA_CKPT:-$(sofa_guess_ckpt)}"
+    SOFA_DICT="${SOFA_DICT:-$(sofa_guess_dict)}"
+  fi
+
+  [[ -n "${SOFA_CKPT}" ]] || die "missing SOFA ckpt (pass --sofa-ckpt)"
+  [[ -n "${SOFA_DICT}" ]] || die "missing SOFA dict (pass --sofa-dict)"
+
+  cmd+=(
+    --sofa-root "${SOFA_ROOT}"
+    --sofa-python "${SOFA_PYTHON}"
+    --sofa-ckpt "${SOFA_CKPT}"
+    --sofa-dict "${SOFA_DICT}"
+  )
+fi
 
 if [[ -n "${LRC}" ]]; then
   cmd+=( --lyrics-lrc "${LRC}" )

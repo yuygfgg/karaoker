@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from karaoker.mapping import ScriptUnit
 
+AlignerBackend = Literal["mfa", "sofa"]
 MfaF0FlattenMode = Literal["none", "constant", "flatten"]
 
 
@@ -52,6 +54,11 @@ class PipelineConfig:
     mfa_acoustic_model: str
     kana_output: str
     lyrics_lrc: Path | None
+    aligner_backend: AlignerBackend = "mfa"
+    sofa_python: str = sys.executable
+    sofa_root: str | None = None
+    sofa_dict: str | None = None
+    sofa_ckpt: str | None = None
     asr_backend: str = "whispercpp"
     kana_backend: str = "mecab"
     gemini_model: str = "gemini-3-flash-preview"

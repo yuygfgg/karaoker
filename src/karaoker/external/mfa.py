@@ -86,7 +86,9 @@ def run_mfa_align(
         )
 
         dict_arg = (
-            str(pronunciation_dict) if pronunciation_dict is not None else "japanese_mfa"
+            str(pronunciation_dict)
+            if pronunciation_dict is not None
+            else "japanese_mfa"
         )
 
         # Adapt the acoustic model to the input audio before aligning.
