@@ -73,28 +73,28 @@ class AudioStage:
             vocals_raw = sep_dir / "vocals_raw.wav"
 
             logger.info("Audio: separating vocals -> %s", str(vocals_raw))
-            # run_audio_separator(
-            #     audio_separator=config.audio_separator,
-            #     input_audio=config.input_path,
-            #     output_audio=vocals_raw,
-            #     model_filename=config.audio_separator_model,
-            #     # Cache models under the repo so repeated runs reuse downloads.
-            #     model_file_dir=_project_root() / "models" / "audio_separator",
-            # )
+            run_audio_separator(
+                audio_separator=config.audio_separator,
+                input_audio=config.input_path,
+                output_audio=vocals_raw,
+                model_filename=config.audio_separator_model,
+                # Cache models under the repo so repeated runs reuse downloads.
+                model_file_dir=_project_root() / "models" / "audio_separator",
+            )
 
             vocals_dry_raw = vocals_raw
             if config.enable_dereverb:
                 vocals_dry_raw = dereverb_dir / "vocals_dry_raw.wav"
                 logger.info("Audio: de-reverb -> %s", str(vocals_dry_raw))
-                # run_audio_separator(
-                #     audio_separator=config.audio_separator,
-                #     input_audio=vocals_raw,
-                #     output_audio=vocals_dry_raw,
-                #     model_filename=config.dereverb_model,
-                #     single_stem="noreverb",
-                #     pick_stem="noreverb",
-                #     model_file_dir=_project_root() / "models" / "audio_separator",
-                # )
+                run_audio_separator(
+                    audio_separator=config.audio_separator,
+                    input_audio=vocals_raw,
+                    output_audio=vocals_dry_raw,
+                    model_filename=config.dereverb_model,
+                    single_stem="noreverb",
+                    pick_stem="noreverb",
+                    model_file_dir=_project_root() / "models" / "audio_separator",
+                )
 
             vocals_dry_16k = paths.audio_dir / "vocals_dry.wav"
             logger.info("Audio: ffmpeg -> %s", str(vocals_dry_16k))

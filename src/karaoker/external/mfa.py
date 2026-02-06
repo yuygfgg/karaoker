@@ -10,6 +10,7 @@ from karaoker.utils import run_checked
 
 _DEFAULT_ALIGN_BEAM = 500
 _DEFAULT_ALIGN_RETRY_BEAM = 2500
+_DEFAULT_ADAPTED_MODEL_NAME = "karaoker_adapted_acoustic_model.zip"
 
 
 def run_mfa_g2p(
@@ -50,7 +51,7 @@ def run_mfa_align(
     mfa: str,
     input_wav: Path,
     transcript_spaced_kana: Path,
-    pronunciation_dict: str | None,
+    pronunciation_dict: str | Path | None,
     acoustic_model: str,
     output_textgrid: Path,
 ) -> None:
@@ -84,16 +85,40 @@ def run_mfa_align(
             transcript_spaced_kana.read_text(encoding="utf-8"), encoding="utf-8"
         )
 
+        dict_arg = (
+            str(pronunciation_dict) if pronunciation_dict is not None else "japanese_mfa"
+        )
+
+        # Adapt the acoustic model to the input audio before aligning.
+        adapted_model = td_path / _DEFAULT_ADAPTED_MODEL_NAME
+        cmd_adapt = [
+            exe,
+            "adapt",
+            str(corpus),
+            dict_arg,
+            str(acoustic_model),
+            str(adapted_model),
+            "--clean",
+            "--single_speaker",
+        ]
+        run_checked(
+            cmd_adapt,
+            env={
+                "MFA_ROOT_DIR": str(mfa_root),
+                "PATH": exe_bin + ":" + os.environ.get("PATH", ""),
+            },
+        )
+        if not adapted_model.exists():
+            raise FileNotFoundError(
+                f"MFA adapt produced no acoustic model at: {adapted_model}"
+            )
+
         cmd = [
             exe,
             "align",
             str(corpus),
-            (
-                str(pronunciation_dict)
-                if pronunciation_dict is not None
-                else "japanese_mfa"
-            ),
-            str(acoustic_model),
+            dict_arg,
+            str(adapted_model),
             str(out_dir),
             "--clean",
             "--beam",
@@ -125,7 +150,7 @@ def run_mfa_align_corpus(
     *,
     mfa: str,
     corpus_dir: Path,
-    pronunciation_dict: str,
+    pronunciation_dict: str | Path,
     acoustic_model: str,
     output_dir: Path,
 ) -> None:
@@ -138,24 +163,50 @@ def run_mfa_align_corpus(
     mfa_root = Path(os.environ.get("MFA_ROOT_DIR", str(default_root)))
     mfa_root.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        exe,
-        "align",
-        str(corpus_dir),
-        str(pronunciation_dict),
-        str(acoustic_model),
-        str(output_dir),
-        "--clean",
-        "--single_speaker",
-        "--beam",
-        str(_DEFAULT_ALIGN_BEAM),
-        "--retry_beam",
-        str(_DEFAULT_ALIGN_RETRY_BEAM),
-    ]
-    run_checked(
-        cmd,
-        env={
-            "MFA_ROOT_DIR": str(mfa_root),
-            "PATH": exe_bin + ":" + os.environ.get("PATH", ""),
-        },
-    )
+    with tempfile.TemporaryDirectory(prefix="karaoker_mfa_") as td:
+        adapted_model = Path(td) / _DEFAULT_ADAPTED_MODEL_NAME
+
+        # Adapt the acoustic model to this corpus before aligning.
+        cmd_adapt = [
+            exe,
+            "adapt",
+            str(corpus_dir),
+            str(pronunciation_dict),
+            str(acoustic_model),
+            str(adapted_model),
+            "--clean",
+            "--single_speaker",
+        ]
+        run_checked(
+            cmd_adapt,
+            env={
+                "MFA_ROOT_DIR": str(mfa_root),
+                "PATH": exe_bin + ":" + os.environ.get("PATH", ""),
+            },
+        )
+        if not adapted_model.exists():
+            raise FileNotFoundError(
+                f"MFA adapt produced no acoustic model at: {adapted_model}"
+            )
+
+        cmd = [
+            exe,
+            "align",
+            str(corpus_dir),
+            str(pronunciation_dict),
+            str(adapted_model),
+            str(output_dir),
+            "--clean",
+            "--single_speaker",
+            "--beam",
+            str(_DEFAULT_ALIGN_BEAM),
+            "--retry_beam",
+            str(_DEFAULT_ALIGN_RETRY_BEAM),
+        ]
+        run_checked(
+            cmd,
+            env={
+                "MFA_ROOT_DIR": str(mfa_root),
+                "PATH": exe_bin + ":" + os.environ.get("PATH", ""),
+            },
+        )
