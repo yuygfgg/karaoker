@@ -103,7 +103,9 @@ def _build_aligner(config: PipelineConfig) -> AlignerProvider:
         return MfaAlignerProvider(mfa=config.mfa)
     if backend == "sofa":
         if config.sofa_root is None:
-            raise ValueError("aligner_backend=sofa requires sofa_root (path to SOFA repo).")
+            raise ValueError(
+                "aligner_backend=sofa requires sofa_root (path to SOFA repo)."
+            )
         return SofaAlignerProvider(
             sofa_python=config.sofa_python,
             sofa_root=Path(config.sofa_root),
@@ -118,6 +120,9 @@ def run_pipeline(
     ffmpeg: str,
     audio_separator: str | None,
     audio_separator_model: str | None = None,
+    enable_lead_vocals: bool = True,
+    lead_vocals_model: str = "UVR-BVE-4B_SN-44100-1.pth",
+    lead_vocals_stem: str = "auto",
     enable_dereverb: bool = True,
     dereverb_model: str = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt",
     enable_silero_vad: bool = True,
@@ -157,6 +162,9 @@ def run_pipeline(
         ffmpeg=ffmpeg,
         audio_separator=audio_separator,
         audio_separator_model=audio_separator_model,
+        enable_lead_vocals=enable_lead_vocals,
+        lead_vocals_model=lead_vocals_model,
+        lead_vocals_stem=lead_vocals_stem,
         enable_dereverb=enable_dereverb,
         dereverb_model=dereverb_model,
         enable_silero_vad=enable_silero_vad,

@@ -48,6 +48,10 @@ Options:
   --no-mfa-f0-preserve-unvoiced       When set, also forces unvoiced frames (F0=0) to the flattened value.
 
   --audio-separator-model <filename>  Default: model_bs_roformer_ep_317_sdr_12.9755.ckpt
+  --lead-vocals-model <filename>      Default: UVR-BVE-4B_SN-44100-1.pth (e.g. UVR-BVE-4B_SN-v2.pth)
+  --lead-vocals-stem <auto|vocals|instrumental>
+                                      Which stem to keep from the lead-vocals model (default: auto).
+  --no-lead-vocals                    Disable lead-vocal isolation (default enabled).
   --dereverb-model <filename>         Default: dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt
   --no-dereverb                       Disable de-reverb (default enabled).
   --no-silero-vad                     Disable Silero VAD gating (default enabled).
@@ -72,6 +76,9 @@ MFA_F0_CONSTANT_HZ="150"
 MFA_F0_FLATTEN_FACTOR="0.0"
 MFA_F0_PRESERVE_UNVOICED=1
 AUDIO_SEP_MODEL="model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+LEAD_VOCALS=1
+LEAD_VOCALS_MODEL="UVR-BVE-4B_SN-44100-1.pth"
+LEAD_VOCALS_STEM="auto"
 DEREVERB_MODEL="dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
 DEREVERB=1
 SILERO_VAD=1
@@ -116,6 +123,10 @@ while [[ $# -gt 0 ]]; do
     --mfa-f0-preserve-unvoiced) MFA_F0_PRESERVE_UNVOICED=1; shift ;;
     --no-mfa-f0-preserve-unvoiced) MFA_F0_PRESERVE_UNVOICED=0; shift ;;
     --audio-separator-model) AUDIO_SEP_MODEL="${2:-}"; shift 2 ;;
+    --lead-vocals-model) LEAD_VOCALS_MODEL="${2:-}"; shift 2 ;;
+    --lead-vocals-stem) LEAD_VOCALS_STEM="${2:-}"; shift 2 ;;
+    --lead-vocals) LEAD_VOCALS=1; shift ;;
+    --no-lead-vocals) LEAD_VOCALS=0; shift ;;
     --dereverb-model) DEREVERB_MODEL="${2:-}"; shift 2 ;;
     --no-dereverb) DEREVERB=0; shift ;;
     --no-silero-vad) SILERO_VAD=0; shift ;;
@@ -256,6 +267,9 @@ ensure_audio_separator_model() {
   mkdir -p "${model_dir}"
   # audio-separator will also fetch a small JSON index; allow network for first run.
   "${AUDIO_SEP}" --model_file_dir "${model_dir}" --download_model_only -m "${AUDIO_SEP_MODEL}"
+  if [[ "${LEAD_VOCALS}" -eq 1 ]]; then
+    "${AUDIO_SEP}" --model_file_dir "${model_dir}" --download_model_only -m "${LEAD_VOCALS_MODEL}"
+  fi
   if [[ "${DEREVERB}" -eq 1 ]]; then
     "${AUDIO_SEP}" --model_file_dir "${model_dir}" --download_model_only -m "${DEREVERB_MODEL}"
   fi
@@ -390,6 +404,11 @@ fi
 if [[ "${SEPARATE}" -eq 1 ]]; then
   [[ -x "${AUDIO_SEP}" ]] || die "audio-separator not found in env at ${AUDIO_SEP}"
   cmd+=( --audio-separator "${AUDIO_SEP}" --audio-separator-model "${AUDIO_SEP_MODEL}" )
+  if [[ "${LEAD_VOCALS}" -eq 0 ]]; then
+    cmd+=( --no-lead-vocals )
+  else
+    cmd+=( --lead-vocals-model "${LEAD_VOCALS_MODEL}" --lead-vocals-stem "${LEAD_VOCALS_STEM}" )
+  fi
   if [[ "${DEREVERB}" -eq 0 ]]; then
     cmd+=( --no-dereverb )
   else

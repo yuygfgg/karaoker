@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
-
-from karaoker.utils import run_checked
 
 
 def run_audio_separator(
@@ -26,7 +26,23 @@ def run_audio_separator(
         default it to `single_stem`.
     """
     output_audio.parent.mkdir(parents=True, exist_ok=True)
-    exe = shutil.which(audio_separator) or audio_separator
+    audio_separator = audio_separator.strip()
+    if not audio_separator:
+        raise ValueError("audio_separator is empty")
+
+    # Support either:
+    # - a plain executable path/name, or
+    # - a command string like "python -m audio_separator".
+    #
+    # If a user passes an explicit path with spaces, shlex-splitting would break it.
+    if Path(audio_separator).exists():
+        exe_parts = [audio_separator]
+    else:
+        exe_parts = shlex.split(audio_separator)
+        if not exe_parts:
+            raise ValueError("audio_separator is empty")
+    exe0 = shutil.which(exe_parts[0]) or exe_parts[0]
+    exe_dir = str(Path(exe0).resolve().parent)
 
     # macOS: torch/OpenMP can abort with a duplicate runtime. This suppresses that check.
     env = {
@@ -36,7 +52,8 @@ def run_audio_separator(
         model_file_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        exe,
+        exe0,
+        *exe_parts[1:],
         "--output_dir",
         str(output_audio.parent),
         "--output_format",
@@ -50,14 +67,50 @@ def run_audio_separator(
         cmd += ["--single_stem", single_stem]
     cmd += [str(input_audio)]
 
-    run_checked(
+    merged_env = os.environ.copy()
+    merged_env.update(env)
+    # Ensure the executable directory is on PATH in case it relies on sibling binaries.
+    merged_env["PATH"] = exe_dir + ":" + merged_env.get("PATH", "")
+
+    proc = subprocess.run(
         cmd,
-        env={
-            **env,
-            "PATH": str(Path(exe).resolve().parent) + ":" + os.environ.get("PATH", ""),
-        },
+        env=merged_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
     )
-    _pick_output(output_audio, stem=(pick_stem or single_stem))
+    if proc.returncode != 0:
+        msg = [
+            "audio-separator failed:",
+            "  " + " ".join(cmd),
+        ]
+        if proc.stdout.strip():
+            msg.append("--- stdout ---")
+            msg.append(proc.stdout.strip())
+        if proc.stderr.strip():
+            msg.append("--- stderr ---")
+            msg.append(proc.stderr.strip())
+        raise RuntimeError("\n".join(msg))
+
+    try:
+        _pick_output(output_audio, stem=(pick_stem or single_stem))
+    except FileNotFoundError as e:
+        # audio-separator can log errors but still exit 0; include the logs to aid debugging.
+        def _tail(s: str, *, n: int = 200) -> str:
+            lines = s.splitlines()
+            if len(lines) <= n:
+                return s
+            return "\n".join(lines[-n:])
+
+        msg = [str(e)]
+        if proc.stdout.strip():
+            msg.append("--- audio-separator stdout (tail) ---")
+            msg.append(_tail(proc.stdout.strip()))
+        if proc.stderr.strip():
+            msg.append("--- audio-separator stderr (tail) ---")
+            msg.append(_tail(proc.stderr.strip()))
+        raise RuntimeError("\n".join(msg)) from e
 
 
 def _pick_output(output_audio: Path, *, stem: str | None) -> None:
@@ -66,7 +119,9 @@ def _pick_output(output_audio: Path, *, stem: str | None) -> None:
 
     This is intentionally heuristic; audio-separator output naming varies by model architecture.
     """
-    wavs = sorted(output_audio.parent.glob("*.wav"))
+    wavs = sorted(
+        {*output_audio.parent.glob("*.wav"), *output_audio.parent.glob("*.WAV")}
+    )
     if not wavs:
         raise FileNotFoundError(
             "audio-separator produced no wav outputs; check its logs/flags."
@@ -93,4 +148,6 @@ def _pick_output(output_audio: Path, *, stem: str | None) -> None:
         if stem_candidates:
             wavs = stem_candidates
 
+    # Prefer the most recently written file (re-runs can leave old outputs around).
+    wavs.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
     shutil.copyfile(wavs[0], output_audio)

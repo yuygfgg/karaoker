@@ -104,6 +104,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--lead-vocals",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable a lead-vocal isolation pass on separated vocals (reduce harmonies/backing vocals) "
+            "(default: enabled)."
+        ),
+    )
+    run.add_argument(
+        "--lead-vocals-model",
+        default="UVR-BVE-4B_SN-44100-1.pth",
+        help=(
+            "audio-separator model filename for lead-vocal isolation (default: %(default)s). "
+            "Example: UVR-BVE-4B_SN-v2.pth"
+        ),
+    )
+    run.add_argument(
+        "--lead-vocals-stem",
+        choices=["auto", "vocals", "instrumental"],
+        default="auto",
+        help=(
+            "Which stem to keep from the lead-vocals model (default: %(default)s). "
+            "If 'auto', we keep 'instrumental' for BVE models (since their 'vocals' output is often "
+            "backing vocals) and 'vocals' otherwise."
+        ),
+    )
+    run.add_argument(
         "--dereverb",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -327,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
             ffmpeg=args.ffmpeg,
             audio_separator=args.audio_separator,
             audio_separator_model=args.audio_separator_model,
+            enable_lead_vocals=args.lead_vocals,
+            lead_vocals_model=args.lead_vocals_model,
+            lead_vocals_stem=args.lead_vocals_stem,
             enable_dereverb=args.dereverb,
             dereverb_model=args.dereverb_model,
             enable_silero_vad=args.silero_vad,

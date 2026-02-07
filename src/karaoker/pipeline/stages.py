@@ -16,7 +16,10 @@ from karaoker.pipeline.types import (
     CorpusResult,
     PipelineContext,
 )
-from karaoker.sofa_dict import detect_sofa_dictionary_kind, generate_sofa_kana_dictionary
+from karaoker.sofa_dict import (
+    detect_sofa_dictionary_kind,
+    generate_sofa_kana_dictionary,
+)
 from karaoker.textgrid_parser import textgrid_to_kana_events
 from karaoker.transcript import TranscriptProvider
 
@@ -70,6 +73,7 @@ class AudioStage:
             from karaoker.external.audio_separator import run_audio_separator
 
             sep_dir = paths.audio_dir / "audio_separator"
+            lead_vocals_dir = paths.audio_dir / "lead_vocals"
             dereverb_dir = paths.audio_dir / "dereverb"
             vocals_raw = sep_dir / "vocals_raw.wav"
 
@@ -83,13 +87,44 @@ class AudioStage:
                 model_file_dir=_project_root() / "models" / "audio_separator",
             )
 
-            vocals_dry_raw = vocals_raw
+            vocals_pre_dereverb = vocals_raw
+            if config.enable_lead_vocals:
+                vocals_pre_dereverb = lead_vocals_dir / "vocals_lead_raw.wav"
+                lead_stem = str(config.lead_vocals_stem).strip().lower()
+                if lead_stem == "auto":
+                    # TODO: For some reason 'Vocal' and 'Instrumental' are swapped.
+                    # We need a better way to detect which stem to keep.
+                    lead_stem = (
+                        "instrumental"
+                        if "bve" in config.lead_vocals_model.lower()
+                        else "vocals"
+                    )
+                if lead_stem not in {"vocals", "instrumental"}:
+                    raise ValueError(
+                        "Invalid lead_vocals_stem; expected one of: auto, vocals, instrumental"
+                    )
+                logger.info(
+                    "Audio: isolating lead vocals (keep=%s) -> %s",
+                    lead_stem,
+                    str(vocals_pre_dereverb),
+                )
+                run_audio_separator(
+                    audio_separator=config.audio_separator,
+                    input_audio=vocals_raw,
+                    output_audio=vocals_pre_dereverb,
+                    model_filename=config.lead_vocals_model,
+                    single_stem=lead_stem,
+                    # Cache models under the repo so repeated runs reuse downloads.
+                    model_file_dir=_project_root() / "models" / "audio_separator",
+                )
+
+            vocals_dry_raw = vocals_pre_dereverb
             if config.enable_dereverb:
                 vocals_dry_raw = dereverb_dir / "vocals_dry_raw.wav"
                 logger.info("Audio: de-reverb -> %s", str(vocals_dry_raw))
                 run_audio_separator(
                     audio_separator=config.audio_separator,
-                    input_audio=vocals_raw,
+                    input_audio=vocals_pre_dereverb,
                     output_audio=vocals_dry_raw,
                     model_filename=config.dereverb_model,
                     single_stem="noreverb",

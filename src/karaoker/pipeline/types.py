@@ -40,6 +40,9 @@ class PipelineConfig:
     ffmpeg: str
     audio_separator: str | None
     audio_separator_model: str | None
+    enable_lead_vocals: bool
+    lead_vocals_model: str
+    lead_vocals_stem: str
     enable_dereverb: bool
     dereverb_model: str
     enable_silero_vad: bool

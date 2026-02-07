@@ -4,7 +4,7 @@ Local Japanese karaoke subtitle generator.
 
 It integrates with:
 
-1. `python-audio-separator` to extract vocals from a song (de-instrumentalize) + de-reverb.
+1. `python-audio-separator` to extract vocals from a song (de-instrumentalize) + lead-vocal isolation + de-reverb.
 2. Silero VAD to hard-zero non-speech regions (silence becomes exactly 0) to reduce alignment noise.
 3. `whisper.cpp` for offline ASR.
 4. MeCab (`mecab-python3` + `unidic-lite`) to convert recognized text to pure kana and insert spaces between
@@ -79,7 +79,7 @@ karaoker run \
 ```
 
 Outputs:
-- `workdir/audio/vocals.wav` (separated vocals + de-reverb + Silero VAD gating, when `--audio-separator` is enabled)
+- `workdir/audio/vocals.wav` (separated vocals + lead-vocal isolation + de-reverb + Silero VAD gating, when `--audio-separator` is enabled)
 - `workdir/audio/vocals_dry.wav` (pre-VAD, de-reverbed 16k mono)
 - `workdir/audio/mfa_input.wav` (optional: WORLD/pyworld re-synthesis with flattened F0 for MFA alignment)
 - `workdir/asr/asr.json`
